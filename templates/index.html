@@ -1,0 +1,544 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<!-- Socket.IO 클라이언트 -->
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<section class="card">
+  <div class="upload-header">
+    <label for="images">영양정보 이미지 업로드 (여러 장 선택 가능)</label>
+    <a href="{{ url_for('download_samples') }}" class="sample-download-btn" title="샘플 파일 다운로드">
+      📥 샘플 파일 다운로드
+    </a>
+  </div>
+  
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" id="upload-form">
+    
+    <div class="dropzone" id="dropzone">
+      <div class="dropzone-content">
+        <div class="dropzone-icon">📁</div>
+        <div class="dropzone-text">
+          <p><strong>이미지를 여기에 드래그하거나 클릭하여 선택하세요</strong></p>
+          <p class="dropzone-subtext">PNG, JPG, JPEG, WEBP 파일 지원</p>
+        </div>
+      </div>
+      <input type="file" id="images" name="images" accept="image/*" multiple style="display: none;" />
+    </div>
+    
+    <div class="file-list" id="file-list" style="display: none;">
+      <h4>선택된 파일:</h4>
+      <div class="files" id="files"></div>
+    </div>
+    
+    <div class="button-group">
+      <button type="submit" id="analyze-btn" disabled>분석하기</button>
+      {% if results %}
+      <form method="post" action="{{ url_for('reset') }}" style="display: inline;">
+        <button type="submit" class="reset-btn" onclick="clearFlashMessages()">초기화</button>
+      </form>
+      {% endif %}
+    </div>
+    
+    <!-- 파일 선택 후 바로 분석 확인 -->
+    <div class="analysis-confirmation" id="analysis-confirmation" style="display: none;">
+      <div class="confirmation-message">
+        <span id="file-count">0</span>개의 파일이 선택되었습니다. 바로 분석을 시작하시겠습니까?
+      </div>
+      <div class="confirmation-buttons">
+        <button type="button" id="start-analysis-btn" class="btn-primary">분석 시작</button>
+        <button type="button" id="cancel-analysis-btn" class="btn-secondary">취소</button>
+      </div>
+    </div>
+    
+    <!-- 진행 상황 표시 -->
+    <div class="progress-container" id="progress-container" style="display: none;">
+      <div class="loading-animation">
+        <div class="loading-spinner"></div>
+        <div class="loading-text" id="loading-text">영양정보 분석 중...</div>
+      </div>
+      
+      <div class="progress-header">
+        <h4>전체 처리 진행 현황</h4>
+        <div class="progress-summary" id="progress-summary">0%</div>
+      </div>
+      
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progress-bar"></div>
+        <div class="progress-percentage" id="progress-percentage">0%</div>
+      </div>
+      
+      <!-- 상세 단계별 진행 현황 -->
+      <div class="analysis-steps-detailed">
+        <div class="step-detailed" id="step-upload">
+          <div class="step-header">
+            <div class="step-icon">📁</div>
+            <div class="step-info">
+              <div class="step-title">파일 업로드</div>
+              <div class="step-description">이미지 파일을 서버로 전송중...</div>
+            </div>
+            <div class="step-status" id="status-upload">⏳</div>
+          </div>
+          <div class="step-progress">
+            <div class="step-progress-bar">
+              <div class="step-progress-fill" id="progress-upload"></div>
+            </div>
+            <div class="step-progress-text" id="progress-text-upload">대기중...</div>
+          </div>
+        </div>
+        
+        <div class="step-detailed" id="step-ocr">
+          <div class="step-header">
+            <div class="step-icon">🔍</div>
+            <div class="step-info">
+              <div class="step-title">OCR 분석</div>
+              <div class="step-description">이미지에서 텍스트를 추출중...</div>
+            </div>
+            <div class="step-status" id="status-ocr">⏳</div>
+          </div>
+          <div class="step-progress">
+            <div class="step-progress-bar">
+              <div class="step-progress-fill" id="progress-ocr"></div>
+            </div>
+            <div class="step-progress-text" id="progress-text-ocr">대기중...</div>
+          </div>
+        </div>
+        
+        <div class="step-detailed" id="step-nutrition">
+          <div class="step-header">
+            <div class="step-icon">🧪</div>
+            <div class="step-info">
+              <div class="step-title">영양정보 추출</div>
+              <div class="step-description">영양성분 데이터를 분석중...</div>
+            </div>
+            <div class="step-status" id="status-nutrition">⏳</div>
+          </div>
+          <div class="step-progress">
+            <div class="step-progress-bar">
+              <div class="step-progress-fill" id="progress-nutrition"></div>
+            </div>
+            <div class="step-progress-text" id="progress-text-nutrition">대기중...</div>
+          </div>
+        </div>
+        
+        <div class="step-detailed" id="step-recommendation">
+          <div class="step-header">
+            <div class="step-icon">🤖</div>
+            <div class="step-info">
+              <div class="step-title">AI 추천 생성</div>
+              <div class="step-description">맞춤형 영양 조언을 생성중...</div>
+            </div>
+            <div class="step-status" id="status-recommendation">⏳</div>
+          </div>
+          <div class="step-progress">
+            <div class="step-progress-bar">
+              <div class="step-progress-fill" id="progress-recommendation"></div>
+            </div>
+            <div class="step-progress-text" id="progress-text-recommendation">대기중...</div>
+          </div>
+        </div>
+        
+        <div class="step-detailed" id="step-complete">
+          <div class="step-header">
+            <div class="step-icon">✅</div>
+            <div class="step-info">
+              <div class="step-title">분석 완료</div>
+              <div class="step-description">모든 분석이 완료되었습니다!</div>
+            </div>
+            <div class="step-status" id="status-complete">⏳</div>
+          </div>
+          <div class="step-progress">
+            <div class="step-progress-bar">
+              <div class="step-progress-fill" id="progress-complete"></div>
+            </div>
+            <div class="step-progress-text" id="progress-text-complete">대기중...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </form>
+</section>
+
+{% if results %}
+<section class="card results">
+  <h2>
+    결과 요약
+    {% set total_files = results.images|length %}
+    {% set success_files = results.images|selectattr("status", "equalto", "success")|list|length %}
+    {% set failed_files = total_files - success_files %}
+    
+    {% if failed_files > 0 %}
+      <span class="completion-status partial">
+        (부분 완료: {{ success_files }}/{{ total_files }}개 파일 성공)
+      </span>
+    {% else %}
+      <span class="completion-status complete">
+        (완료: {{ total_files }}개 파일 모두 성공)
+      </span>
+    {% endif %}
+  </h2>
+  <div class="persons">
+    <div class="person-card">
+      <h3>남자 기준</h3>
+      <div class="water-glass male" data-percent="{{ results.male_calorie_achievement }}">
+        <div class="glass-container">
+          <div class="water-fill"></div>
+          <div class="glass-overlay"></div>
+          <div class="percentage-display">{{ results.male_calorie_achievement }}%</div>
+        </div>
+      </div>
+      <div class="achievement-info">
+        <div class="pct">칼로리 {{ results.male_calorie_achievement }}%</div>
+        <div class="overall">전체 평균 {{ results.male_overall }}%</div>
+      </div>
+    </div>
+    <div class="person-card">
+      <h3>여자 기준</h3>
+      <div class="water-glass female" data-percent="{{ results.female_calorie_achievement }}">
+        <div class="glass-container">
+          <div class="water-fill"></div>
+          <div class="glass-overlay"></div>
+          <div class="percentage-display">{{ results.female_calorie_achievement }}%</div>
+        </div>
+      </div>
+      <div class="achievement-info">
+        <div class="pct">칼로리 {{ results.female_calorie_achievement }}%</div>
+        <div class="overall">전체 평균 {{ results.female_overall }}%</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>세부 항목 (전체 패키지 기준)</h3>
+  <div class="scroll">
+    <table class="nutrition-table">
+      <thead>
+        <tr>
+          <th>파일명</th>
+          {% for k in results.display_order %}
+          {% if k in results.totals %}
+          <th>{{ {
+            'calories_kcal':'열량<br/>(kcal)', 'sodium_mg':'나트륨<br/>(mg)', 'carbs_g':'탄수화물<br/>(g)',
+            'sugars_g':'당류<br/>(g)', 'fat_g':'지방<br/>(g)', 'sat_fat_g':'포화지방<br/>(g)', 'trans_fat_g':'트랜스지방<br/>(g)',
+            'cholesterol_mg':'콜레스테롤<br/>(mg)', 'protein_g':'단백질<br/>(g)', 'total_volume_g':'내용량<br/>(g)', 'total_volume_ml':'내용량<br/>(ml)'
+          }[k]|safe }}</th>
+          {% endif %}
+          {% endfor %}
+          <th>남자%</th>
+          <th>여자%</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- 합계 행 -->
+        <tr class="total-row">
+          <td><strong>합계</strong></td>
+          {% for k in results.display_order %}
+          {% if k in results.totals %}
+          <td>
+            <strong>{{ '%.1f'|format(results.totals[k]) if results.totals[k] is not none else '-' }}</strong>
+            {% if k in results.male_pct and results.male_pct[k] %}
+              {% set male_pct_val = results.male_pct[k] %}
+              {% if male_pct_val < 80 %}
+                <span class="arrow insufficient" title="부족">🔻</span>
+              {% elif male_pct_val > 120 %}
+                <span class="arrow excess" title="초과">⚠️</span>
+              {% else %}
+                <span class="arrow optimal" title="적정">✅</span>
+              {% endif %}
+            {% endif %}
+          </td>
+          {% endif %}
+          {% endfor %}
+          <td>
+            <div class="bar"><span style="width: {{ results.male_overall }}%"></span></div>
+            <small><strong>{{ results.male_overall }}%</strong></small>
+          </td>
+          <td>
+            <div class="bar"><span style="width: {{ results.female_overall }}%"></span></div>
+            <small><strong>{{ results.female_overall }}%</strong></small>
+          </td>
+        </tr>
+        
+        <!-- 개별 파일 행들 -->
+        {% for r in results.images %}
+        <tr class="{{ 'pass-row' if r.status == 'pass' else ('error-row' if r.status == 'error' else '') }}">
+          <td>
+            {{ r.filename }}
+            {% if r.status == 'pass' %}
+            <span class="status-badge pass" title="{{ r.get('error', 'OCR 분석 실패') }}">PASS</span>
+            {% elif r.status == 'error' %}
+            <span class="status-badge error" title="{{ r.get('error', '분석 실패') }}">❌</span>
+            {% else %}
+            <span class="status-badge success">✅</span>
+            {% endif %}
+          </td>
+          {% for k in results.display_order %}
+          {% if k in results.totals %}
+          <td>
+            {% if r.status == 'pass' %}
+              <span class="pass-text">PASS</span>
+            {% elif r.status == 'error' %}
+              0.0
+            {% elif r.full_package and r.full_package.get(k) is not none %}
+              {{ '%.1f'|format(r.full_package.get(k, 0)) }}
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          {% endif %}
+          {% endfor %}
+          <td>-</td>
+          <td>-</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 업로드된 이미지 섬네일 슬라이더 -->
+  <div class="image-gallery">
+    <h3>📷 업로드된 이미지 {{ results.images|length }}개</h3>
+    <div class="gallery-container">
+      <button class="gallery-nav prev" id="gallery-prev">‹</button>
+      <div class="gallery-viewport">
+        <div class="gallery-track" id="gallery-track">
+          {% for r in results.images %}
+          <div class="gallery-item {{ 'pass' if r.status == 'pass' else 'success' }}" data-filename="{{ r.filename }}" data-status="{{ r.status }}">
+            <div class="thumbnail-container" onclick="showImageDetail('{{ r.filename }}', '{{ r.status }}', '{{ r.image_url if r.image_url else '' }}', {{ (r.fields|tojson)|safe if r.fields else 'null' }}, {{ (r.full_package|tojson)|safe if r.full_package else 'null' }})">
+              <div class="thumbnail-placeholder">
+                {% if r.image_url %}
+                  <img src="{{ r.image_url }}" alt="{{ r.filename }}" class="thumbnail-image" />
+                {% else %}
+                  <div class="image-icon">🖼️</div>
+                {% endif %}
+                
+                {% if r.status == 'pass' %}
+                  <div class="error-overlay">
+                    <span class="error-icon">❌</span>
+                    <span class="error-text">분석 실패</span>
+                  </div>
+                {% else %}
+                  <div class="success-overlay">
+                    <span class="success-icon">✅</span>
+                  </div>
+                {% endif %}
+                
+                <!-- 클릭 힌트 -->
+                <div class="click-hint">
+                  <span class="hint-icon">🔍</span>
+                  <span class="hint-text">클릭하여 상세보기</span>
+                </div>
+              </div>
+              <div class="thumbnail-info">
+                <div class="filename">{{ r.filename }}</div>
+                <div class="status {{ r.status }}">
+                  {% if r.status == 'pass' %}
+                    PASS
+                  {% elif r.status == 'success' %}
+                    완료
+                  {% else %}
+                    오류
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <button class="gallery-nav next" id="gallery-next">›</button>
+    </div>
+    <div class="gallery-indicators">
+      {% for r in results.images %}
+      <span class="indicator {{ 'active' if loop.first else '' }}" data-index="{{ loop.index0 }}"></span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <details class="files">
+    <summary>분석된 파일 {{ results.images|length }}개 (원본 데이터)</summary>
+    <ul>
+      {% for r in results.images %}
+      <li>
+        <strong>{{ r.filename }}</strong>
+        {% if r.status == 'pass' %}
+        <div><small>상태:</small> <span class="pass-text">PASS (OCR 분석 실패)</span></div>
+        <div><small>오류:</small> <code>{{ r.error }}</code></div>
+        {% else %}
+        <div><small>100g 기준:</small> <code>{{ r.fields }}</code></div>
+        <div><small>전체 패키지:</small> <code>{{ r.full_package }}</code></div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+
+  <!-- 영양 상태 분석 및 추천 섹션 -->
+  {% if results.male_deficient or results.female_deficient or results.male_excessive or results.female_excessive %}
+  <div class="recommendation-section">
+    <h3>📊 영양 상태 분석 및 개선 방안</h3>
+    
+    <div class="recommendation-tabs">
+      <button class="tab-btn active" onclick="showRecommendation('male')">남성 기준</button>
+      <button class="tab-btn" onclick="showRecommendation('female')">여성 기준</button>
+    </div>
+    
+    <div class="recommendation-content">
+      <!-- 남성 기준 추천 -->
+      <div id="male-recommendation" class="recommendation-panel active">
+        {% if results.male_deficient %}
+        <div class="deficient-nutrients">
+          <h4>🔻 부족한 영양소:</h4>
+          <div class="nutrient-chips">
+            {% for nutrient, deficit in results.male_deficient.items() %}
+            <span class="nutrient-chip deficient">
+              {{ {
+                'calories_kcal':'열량', 'sodium_mg':'나트륨', 'carbs_g':'탄수화물',
+                'sugars_g':'당류', 'fat_g':'지방', 'sat_fat_g':'포화지방', 'trans_fat_g':'트랜스지방',
+                'cholesterol_mg':'콜레스테롤', 'protein_g':'단백질'
+              }[nutrient] }}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if results.male_excessive %}
+        <div class="excessive-nutrients">
+          <h4>🔺 과다 섭취한 영양소:</h4>
+          <div class="nutrient-chips">
+            {% for nutrient, excess in results.male_excessive.items() %}
+            <span class="nutrient-chip excessive">
+              {{ {
+                'calories_kcal':'열량', 'sodium_mg':'나트륨', 'carbs_g':'탄수화물',
+                'sugars_g':'당류', 'fat_g':'지방', 'sat_fat_g':'포화지방', 'trans_fat_g':'트랜스지방',
+                'cholesterol_mg':'콜레스테롤', 'protein_g':'단백질'
+              }[nutrient] }}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if results.male_deficient %}
+        <div class="recommendation-text">
+          <h4>🍎 부족한 영양소 보충 방법:</h4>
+          <div class="recommendation-content-text">
+            {% if results.male_recommendation and results.male_recommendation.strip() %}
+              {{ results.male_recommendation | nl2br | safe }}
+            {% else %}
+              <p>💡 위에 표시된 영양소가 부족합니다. 균형 잡힌 식단을 통해 부족한 영양소를 보충하시기 바랍니다.</p>
+              <p>🔍 LLM API가 설정되지 않아 상세한 추천을 제공할 수 없습니다.</p>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if results.male_excessive %}
+        <div class="reduction-text">
+          <h4>⚠️ 과다 섭취 영양소 감소 방법:</h4>
+          <div class="reduction-content-text">
+            {% if results.male_reduction and results.male_reduction.strip() %}
+              {{ results.male_reduction | nl2br | safe }}
+            {% else %}
+              <p>⚠️ 위에 표시된 영양소를 과다 섭취했습니다. 해당 영양소가 많이 포함된 음식을 줄이시기 바랍니다.</p>
+              <p>🔍 LLM API가 설정되지 않아 상세한 감소 방법을 제공할 수 없습니다.</p>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if not results.male_deficient and not results.male_excessive %}
+        <div class="no-recommendation">
+          <p>🎉 모든 영양소가 적정 수준으로 섭취되었습니다!</p>
+        </div>
+        {% endif %}
+      </div>
+      
+      <!-- 여성 기준 추천 -->
+      <div id="female-recommendation" class="recommendation-panel">
+        {% if results.female_deficient %}
+        <div class="deficient-nutrients">
+          <h4>🔻 부족한 영양소:</h4>
+          <div class="nutrient-chips">
+            {% for nutrient, deficit in results.female_deficient.items() %}
+            <span class="nutrient-chip deficient">
+              {{ {
+                'calories_kcal':'열량', 'sodium_mg':'나트륨', 'carbs_g':'탄수화물',
+                'sugars_g':'당류', 'fat_g':'지방', 'sat_fat_g':'포화지방', 'trans_fat_g':'트랜스지방',
+                'cholesterol_mg':'콜레스테롤', 'protein_g':'단백질'
+              }[nutrient] }}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if results.female_excessive %}
+        <div class="excessive-nutrients">
+          <h4>🔺 과다 섭취한 영양소:</h4>
+          <div class="nutrient-chips">
+            {% for nutrient, excess in results.female_excessive.items() %}
+            <span class="nutrient-chip excessive">
+              {{ {
+                'calories_kcal':'열량', 'sodium_mg':'나트륨', 'carbs_g':'탄수화물',
+                'sugars_g':'당류', 'fat_g':'지방', 'sat_fat_g':'포화지방', 'trans_fat_g':'트랜스지방',
+                'cholesterol_mg':'콜레스테롤', 'protein_g':'단백질'
+              }[nutrient] }}
+            </span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if results.female_deficient %}
+        <div class="recommendation-text">
+          <h4>🍎 부족한 영양소 보충 방법:</h4>
+          <div class="recommendation-content-text">
+            {% if results.female_recommendation and results.female_recommendation.strip() %}
+              {{ results.female_recommendation | nl2br | safe }}
+            {% else %}
+              <p>💡 위에 표시된 영양소가 부족합니다. 균형 잡힌 식단을 통해 부족한 영양소를 보충하시기 바랍니다.</p>
+              <p>🔍 LLM API가 설정되지 않아 상세한 추천을 제공할 수 없습니다.</p>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if results.female_excessive %}
+        <div class="reduction-text">
+          <h4>⚠️ 과다 섭취 영양소 감소 방법:</h4>
+          <div class="reduction-content-text">
+            {% if results.female_reduction and results.female_reduction.strip() %}
+              {{ results.female_reduction | nl2br | safe }}
+            {% else %}
+              <p>⚠️ 위에 표시된 영양소를 과다 섭취했습니다. 해당 영양소가 많이 포함된 음식을 줄이시기 바랍니다.</p>
+              <p>🔍 LLM API가 설정되지 않아 상세한 감소 방법을 제공할 수 없습니다.</p>
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+        
+        {% if not results.female_deficient and not results.female_excessive %}
+        <div class="no-recommendation">
+          <p>🎉 모든 영양소가 적정 수준으로 섭취되었습니다!</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+<script>
+function showRecommendation(gender) {
+  // 모든 탭 버튼과 패널의 active 클래스 제거
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+  document.querySelectorAll('.recommendation-panel').forEach(panel => panel.classList.remove('active'));
+  
+  // 선택된 탭 버튼과 패널에 active 클래스 추가
+  event.target.classList.add('active');
+  document.getElementById(gender + '-recommendation').classList.add('active');
+}
+</script>
+
+{% endblock %}
+

@@ -1,0 +1,9 @@
+Flask==3.0.3
+Flask-SocketIO==5.3.6
+requests==2.32.3
+python-dotenv==1.0.1
+Pillow==10.4.0
+paddleocr==2.7.3
+paddlepaddle==2.6.1
+numpy==1.24.4
+
