@@ -300,8 +300,14 @@
       <div class="gallery-viewport">
         <div class="gallery-track" id="gallery-track">
           {% for r in results.images %}
-          <div class="gallery-item {{ 'pass' if r.status == 'pass' else 'success' }}" data-filename="{{ r.filename }}" data-status="{{ r.status }}">
-            <div class="thumbnail-container" onclick="showImageDetail('{{ r.filename }}', '{{ r.status }}', '{{ r.image_url if r.image_url else '' }}', {{ (r.fields|tojson)|safe if r.fields else 'null' }}, {{ (r.full_package|tojson)|safe if r.full_package else 'null' }})">
+          <div class="gallery-item {{ 'pass' if r.status == 'pass' else 'success' }}" 
+               data-filename="{{ r.filename }}" 
+               data-status="{{ r.status }}"
+               data-image-url="{{ r.image_url if r.image_url else '' }}"
+               data-fields="{{ (r.fields|tojson)|safe if r.fields else '{}' }}"
+               data-full-package="{{ (r.full_package|tojson)|safe if r.full_package else '{}' }}"
+               data-ocr-texts="{{ (r.ocr_texts|tojson)|safe if r.ocr_texts else '[]' }}">
+            <div class="thumbnail-container"  onclick="showImageDetailFromData(this)">
               <div class="thumbnail-placeholder">
                 {% if r.image_url %}
                   <img src="{{ r.image_url }}" alt="{{ r.filename }}" class="thumbnail-image" />
@@ -420,9 +426,18 @@
         {% if results.male_deficient %}
         <div class="recommendation-text">
           <h4>🍎 부족한 영양소 보충 방법:</h4>
-          <div class="recommendation-content-text">
+          <div class="recommendation-content-text markdown-content" id="male-recommendation-content">
             {% if results.male_recommendation and results.male_recommendation.strip() %}
-              {{ results.male_recommendation | nl2br | safe }}
+              <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                  const maleContent = document.getElementById('male-recommendation-content');
+                  if (maleContent && typeof marked !== 'undefined') {
+                    const markdownText = {{ results.male_recommendation | tojson }};
+                    maleContent.innerHTML = marked.parse(markdownText);
+                  }
+                });
+              </script>
+              <div class="loading-markdown">마크다운 렌더링 중...</div>
             {% else %}
               <p>💡 위에 표시된 영양소가 부족합니다. 균형 잡힌 식단을 통해 부족한 영양소를 보충하시기 바랍니다.</p>
               <p>🔍 LLM API가 설정되지 않아 상세한 추천을 제공할 수 없습니다.</p>
@@ -434,9 +449,18 @@
         {% if results.male_excessive %}
         <div class="reduction-text">
           <h4>⚠️ 과다 섭취 영양소 감소 방법:</h4>
-          <div class="reduction-content-text">
+          <div class="reduction-content-text markdown-content" id="male-reduction-content">
             {% if results.male_reduction and results.male_reduction.strip() %}
-              {{ results.male_reduction | nl2br | safe }}
+              <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                  const maleReductionContent = document.getElementById('male-reduction-content');
+                  if (maleReductionContent && typeof marked !== 'undefined') {
+                    const markdownText = {{ results.male_reduction | tojson }};
+                    maleReductionContent.innerHTML = marked.parse(markdownText);
+                  }
+                });
+              </script>
+              <div class="loading-markdown">마크다운 렌더링 중...</div>
             {% else %}
               <p>⚠️ 위에 표시된 영양소를 과다 섭취했습니다. 해당 영양소가 많이 포함된 음식을 줄이시기 바랍니다.</p>
               <p>🔍 LLM API가 설정되지 않아 상세한 감소 방법을 제공할 수 없습니다.</p>
@@ -491,9 +515,18 @@
         {% if results.female_deficient %}
         <div class="recommendation-text">
           <h4>🍎 부족한 영양소 보충 방법:</h4>
-          <div class="recommendation-content-text">
+          <div class="recommendation-content-text markdown-content" id="female-recommendation-content">
             {% if results.female_recommendation and results.female_recommendation.strip() %}
-              {{ results.female_recommendation | nl2br | safe }}
+              <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                  const femaleContent = document.getElementById('female-recommendation-content');
+                  if (femaleContent && typeof marked !== 'undefined') {
+                    const markdownText = {{ results.female_recommendation | tojson }};
+                    femaleContent.innerHTML = marked.parse(markdownText);
+                  }
+                });
+              </script>
+              <div class="loading-markdown">마크다운 렌더링 중...</div>
             {% else %}
               <p>💡 위에 표시된 영양소가 부족합니다. 균형 잡힌 식단을 통해 부족한 영양소를 보충하시기 바랍니다.</p>
               <p>🔍 LLM API가 설정되지 않아 상세한 추천을 제공할 수 없습니다.</p>
@@ -505,9 +538,18 @@
         {% if results.female_excessive %}
         <div class="reduction-text">
           <h4>⚠️ 과다 섭취 영양소 감소 방법:</h4>
-          <div class="reduction-content-text">
+          <div class="reduction-content-text markdown-content" id="female-reduction-content">
             {% if results.female_reduction and results.female_reduction.strip() %}
-              {{ results.female_reduction | nl2br | safe }}
+              <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                  const femaleReductionContent = document.getElementById('female-reduction-content');
+                  if (femaleReductionContent && typeof marked !== 'undefined') {
+                    const markdownText = {{ results.female_reduction | tojson }};
+                    femaleReductionContent.innerHTML = marked.parse(markdownText);
+                  }
+                });
+              </script>
+              <div class="loading-markdown">마크다운 렌더링 중...</div>
             {% else %}
               <p>⚠️ 위에 표시된 영양소를 과다 섭취했습니다. 해당 영양소가 많이 포함된 음식을 줄이시기 바랍니다.</p>
               <p>🔍 LLM API가 설정되지 않아 상세한 감소 방법을 제공할 수 없습니다.</p>
@@ -539,6 +581,9 @@ function showRecommendation(gender) {
   document.getElementById(gender + '-recommendation').classList.add('active');
 }
 </script>
+
+<!-- Markdown 파싱을 위한 marked.js 라이브러리 -->
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
 
 {% endblock %}
 

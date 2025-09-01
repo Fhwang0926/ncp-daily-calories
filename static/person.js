@@ -35,6 +35,9 @@ if (typeof io !== 'undefined') {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  // 페이지 새로고침 시 초기화 처리
+  handlePageRefresh();
+  
   // 물이 차오르는 컵 애니메이션
   document.querySelectorAll('.water-glass').forEach(el => {
     const pct = parseFloat(el.dataset.percent || '0');
@@ -277,6 +280,9 @@ function initProgressTracking() {
     
     console.log('Showing progress for', files.length, 'files');
     
+    // 분석 시작 플래그 설정
+    sessionStorage.setItem('isFromAnalysis', 'true');
+    
     // 진행 상황 UI 표시
     if (progressContainer) {
     progressContainer.style.display = 'block';
@@ -290,11 +296,21 @@ function initProgressTracking() {
     analyzeBtn.textContent = '분석 중...';
     }
     
-    // 파일 업로드 진행 상황부터 시작
-    simulateFileUploadProgress(files, () => {
-      // 업로드 완료 후 실제 처리 과정 시뮬레이션 시작
-      simulateRealisticProgress(files);
-    });
+    // 기존 결과 섹션 숨기기
+    hideExistingResults();
+    
+    // Socket.IO 연결 확인 후 적절한 방법 선택
+    if (socket && isSocketConnected) {
+      // 웹소켓 연결이 있으면 백엔드에서 진행 상황 처리
+      console.log('Form submitted, Socket.IO will handle progress');
+      // 백엔드에서 자동으로 진행 상황을 전송할 것임
+    } else {
+      // 웹소켓이 없으면 클라이언트 시뮬레이션 사용
+      console.log('Form submitted, using client simulation');
+      simulateFileUploadProgress(files, () => {
+        simulateRealisticProgress(files);
+      });
+    }
   });
 }
 
@@ -350,42 +366,47 @@ function handleAnalysisComplete() {
   }, 2000); // 2초 대기
 }
 
-// 결과 화면을 애니메이션과 함께 표시
-function showResultsWithAnimation() {
-  // 페이지 새로고침 대신 결과 영역으로 스크롤
+// 기존 결과 섹션 숨기기
+function hideExistingResults() {
   const resultsSection = document.querySelector('.results');
   if (resultsSection) {
-    // 결과 섹션이 이미 있는 경우 스크롤
+    console.log('Hiding existing results section');
+    resultsSection.style.transition = 'opacity 0.5s ease-out, transform 0.5s ease-out';
     resultsSection.style.opacity = '0';
-    resultsSection.style.transform = 'translateY(20px)';
-    resultsSection.style.transition = 'opacity 0.8s ease-out, transform 0.8s ease-out';
+    resultsSection.style.transform = 'translateY(-20px)';
     
     setTimeout(() => {
-      resultsSection.style.opacity = '1';
-      resultsSection.style.transform = 'translateY(0)';
-      
-      // 부드러운 스크롤
-      resultsSection.scrollIntoView({ 
-        behavior: 'smooth', 
-        block: 'start' 
-      });
-    }, 100);
-  } else {
-    // 결과가 없는 경우 페이지 새로고침 (폴백)
-    console.log('No results section found, reloading page...');
-    setTimeout(() => {
-      window.location.reload();
-    }, 1000);
+      resultsSection.style.display = 'none';
+    }, 500);
   }
+}
+
+// 결과 화면을 애니메이션과 함께 표시
+function showResultsWithAnimation() {
+  // 결과가 없는 경우 페이지 새로고침으로 결과 표시
+  console.log('Analysis completed, reloading page to show results...');
+  
+  // 분석 완료 플래그 설정
+  sessionStorage.setItem('isFromAnalysis', 'true');
+  
+  // 부드러운 전환을 위해 약간 대기 후 새로고침
+  setTimeout(() => {
+    window.location.reload();
+  }, 500);
 }
 
 // LLM 스트리밍 응답 처리
 function updateLLMResponse(data) {
   const { type, data: content, full_response } = data;
   
-  if (type === 'chunk') {
+  console.log('LLM Response received:', { type, content, full_response });
+  
+  if (type === 'thinking' || type === 'connecting' || type === 'generating' || type === 'responding') {
+    // 진행 상태 메시지 표시 (채팅 스타일)
+    updateRecommendationText(createTypingIndicator(content), false, true);
+  } else if (type === 'chunk') {
     // 실시간으로 텍스트 추가
-    updateRecommendationText(content, false);
+    updateRecommendationText(full_response || content, false);
   } else if (type === 'complete') {
     // 완료된 응답 표시
     updateRecommendationText(full_response || content, true);
@@ -395,17 +416,34 @@ function updateLLMResponse(data) {
     handleAnalysisComplete();
   } else if (type === 'error') {
     console.error('LLM Error:', content);
-    updateRecommendationText(content, true);
+    updateRecommendationText(`❌ ${content}`, true);
   }
 }
 
+// 타이핑 인디케이터 생성 (채팅 스타일)
+function createTypingIndicator(message) {
+  return `
+    <div class="llm-typing-container">
+      <div class="llm-status-message">${message}</div>
+      <div class="llm-typing-dots">
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </div>
+    </div>
+  `;
+}
+
 // 추천 텍스트 업데이트
-function updateRecommendationText(content, isComplete) {
+function updateRecommendationText(content, isComplete, isTyping = false) {
   const maleRecommendationElement = document.querySelector('#male-recommendation .recommendation-content-text');
   const femaleRecommendationElement = document.querySelector('#female-recommendation .recommendation-content-text');
   
   if (maleRecommendationElement) {
-    if (isComplete) {
+    if (isTyping) {
+      // 타이핑 인디케이터는 HTML 그대로 표시
+      maleRecommendationElement.innerHTML = content;
+    } else if (isComplete) {
       maleRecommendationElement.innerHTML = content.replace(/\n/g, '<br>');
     } else {
       maleRecommendationElement.innerHTML += content.replace(/\n/g, '<br>');
@@ -413,7 +451,10 @@ function updateRecommendationText(content, isComplete) {
   }
   
   if (femaleRecommendationElement) {
-    if (isComplete) {
+    if (isTyping) {
+      // 타이핑 인디케이터는 HTML 그대로 표시
+      femaleRecommendationElement.innerHTML = content;
+    } else if (isComplete) {
       femaleRecommendationElement.innerHTML = content.replace(/\n/g, '<br>');
     } else {
       femaleRecommendationElement.innerHTML += content.replace(/\n/g, '<br>');
@@ -771,35 +812,77 @@ function initImageGallery() {
   
   // 클릭 이벤트 추가 (onclick 속성 외에 추가 보장)
   const thumbnailContainers = galleryTrack.querySelectorAll('.thumbnail-container');
+  console.log('Found thumbnail containers:', thumbnailContainers.length);
+  
   thumbnailContainers.forEach((container, index) => {
+    console.log(`Setting up click handler for thumbnail ${index}`);
+    
     container.addEventListener('click', function(e) {
+      console.log('Thumbnail clicked!', index);
       e.preventDefault();
       e.stopPropagation();
       
-      // onclick 속성에서 파라미터 추출
-      const onclickAttr = container.getAttribute('onclick');
-      if (onclickAttr) {
-        console.log('Executing onclick:', onclickAttr);
-        try {
-          // onclick 속성 실행
-          eval(onclickAttr);
-        } catch (error) {
-          console.error('Error executing onclick:', error);
-        }
-      } else {
-        console.log('No onclick attribute found on thumbnail container');
-      }
+      // 새로운 data 속성 기반 함수 사용
+      showImageDetailFromData(container);
     });
   });
 }
 
+// 이미지 상세보기 (data 속성에서 정보 추출)
+function showImageDetailFromData(element) {
+  console.log('=== showImageDetailFromData START ===');
+  
+  const galleryItem = element.closest('.gallery-item');
+  if (!galleryItem) {
+    console.error('Gallery item not found');
+    return;
+  }
+  
+  const filename = galleryItem.getAttribute('data-filename');
+  const status = galleryItem.getAttribute('data-status');
+  const imageUrl = galleryItem.getAttribute('data-image-url');
+  const fieldsStr = galleryItem.getAttribute('data-fields');
+  const fullPackageStr = galleryItem.getAttribute('data-full-package');
+  const ocrTextsStr = galleryItem.getAttribute('data-ocr-texts');
+  
+  console.log('Extracted data:', { filename, status, imageUrl, fieldsStr, fullPackageStr, ocrTextsStr });
+  
+  let fields = null;
+  let fullPackage = null;
+  let ocrTexts = null;
+  
+  try {
+    fields = fieldsStr && fieldsStr !== '{}' ? JSON.parse(fieldsStr) : null;
+  } catch (e) {
+    console.warn('Failed to parse fields:', e);
+  }
+  
+  try {
+    fullPackage = fullPackageStr && fullPackageStr !== '{}' ? JSON.parse(fullPackageStr) : null;
+  } catch (e) {
+    console.warn('Failed to parse fullPackage:', e);
+  }
+  
+  try {
+    ocrTexts = ocrTextsStr && ocrTextsStr !== '[]' ? JSON.parse(ocrTextsStr) : null;
+  } catch (e) {
+    console.warn('Failed to parse ocrTexts:', e);
+  }
+  
+  console.log('Parsed data:', { fields, fullPackage, ocrTexts });
+  
+  showImageDetail(filename, status, imageUrl, fields, fullPackage, ocrTexts);
+}
+
 // 이미지 상세보기 (전역 함수)
-function showImageDetail(filename, status, imageUrl, fields, fullPackage) {
-  console.log('showImageDetail called with:', { filename, status, imageUrl, fields, fullPackage });
+function showImageDetail(filename, status, imageUrl, fields, fullPackage, ocrTexts) {
+  console.log('=== showImageDetail START ===');
+  console.log('Parameters:', { filename, status, imageUrl, fields, fullPackage, ocrTexts });
   
   // 기존 모달이 있으면 제거
   const existingModal = document.querySelector('.image-detail-modal');
   if (existingModal) {
+    console.log('Removing existing modal');
     existingModal.remove();
   }
   
@@ -825,7 +908,7 @@ function showImageDetail(filename, status, imageUrl, fields, fullPackage) {
     <div class="modal-backdrop" onclick="closeImageDetail()">
       <div class="modal-content" onclick="event.stopPropagation()">
         <div class="modal-header">
-          <h3>이미지 상세 정보</h3>
+          <h3>📋 ${filename} - 제품 영양정보</h3>
           <button class="modal-close" onclick="closeImageDetail()">✕</button>
         </div>
         <div class="modal-body">
@@ -849,7 +932,7 @@ function showImageDetail(filename, status, imageUrl, fields, fullPackage) {
             </div>
             ${status === 'pass' ? 
               '<div class="info-note">이 이미지는 OCR 분석에 실패하여 영양정보를 추출할 수 없었습니다.</div>' : 
-              generateNutritionTable(fields, fullPackage)
+              generateNutritionTable(fields, fullPackage, ocrTexts)
             }
           </div>
         </div>
@@ -857,12 +940,30 @@ function showImageDetail(filename, status, imageUrl, fields, fullPackage) {
     </div>
   `;
   
+  console.log('Appending modal to body');
   document.body.appendChild(modal);
+  
+  console.log('Modal added to DOM, checking if visible');
   
   // 애니메이션을 위해 다음 프레임에 show 클래스 추가
   requestAnimationFrame(() => {
+    console.log('Adding show class to modal');
     modal.classList.add('show');
+    
+    // 모달이 실제로 보이는지 확인
+    setTimeout(() => {
+      const isVisible = window.getComputedStyle(modal).visibility !== 'hidden' && 
+                       window.getComputedStyle(modal).opacity !== '0';
+      console.log('Modal visibility check:', isVisible);
+      console.log('Modal styles:', {
+        visibility: window.getComputedStyle(modal).visibility,
+        opacity: window.getComputedStyle(modal).opacity,
+        zIndex: window.getComputedStyle(modal).zIndex
+      });
+    }, 100);
   });
+  
+  console.log('=== showImageDetail END ===');
 }
 
 // 이미지 상세보기 닫기
@@ -910,6 +1011,74 @@ function clearFlashMessages() {
 // 전역 함수로 등록
 window.clearFlashMessages = clearFlashMessages;
 
+// 페이지 새로고침 시 초기화 처리
+function handlePageRefresh() {
+  console.log('Checking for page refresh initialization...');
+  
+  // 결과가 있는 페이지인지 확인
+  const resultsSection = document.querySelector('.results');
+  const hasResults = resultsSection && resultsSection.innerHTML.trim().length > 0;
+  
+  if (hasResults) {
+    console.log('Results found on page load');
+    
+    // 세션 스토리지를 사용한 새로고침 감지
+    const pageLoadTime = Date.now();
+    const lastPageLoadTime = sessionStorage.getItem('lastPageLoadTime');
+    const isFromAnalysis = sessionStorage.getItem('isFromAnalysis') === 'true';
+    const fromReset = new URLSearchParams(window.location.search).get('from_reset');
+    
+    sessionStorage.setItem('lastPageLoadTime', pageLoadTime.toString());
+    
+    console.log('Page load info:', {
+      lastPageLoadTime,
+      isFromAnalysis,
+      fromReset,
+      timeDiff: lastPageLoadTime ? pageLoadTime - parseInt(lastPageLoadTime) : 0
+    });
+    
+    // from_reset 매개변수가 있으면 정상적인 초기화 후 접근
+    if (fromReset === 'true') {
+      console.log('Normal access after reset');
+      sessionStorage.removeItem('isFromAnalysis');
+      
+      // URL 정리
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, newUrl);
+      return;
+    }
+    
+    // 분석 완료 후가 아닌 상태에서 결과 페이지 접근 시 초기화
+    if (!isFromAnalysis) {
+      console.log('Direct access to results page without analysis, redirecting to home...');
+      
+      // 즉시 홈으로 이동
+      window.location.href = '/';
+      return;
+    }
+    
+    // 새로고침 감지 (같은 세션에서 짧은 시간 간격으로 재로드)
+    if (lastPageLoadTime && (pageLoadTime - parseInt(lastPageLoadTime)) < 5000) {
+      console.log('Page refresh detected, redirecting to home...');
+      
+      sessionStorage.removeItem('isFromAnalysis');
+      window.location.href = '/';
+      return;
+    }
+    
+    console.log('Normal page access with results');
+  } else {
+    console.log('No results found on page, normal initialization');
+    sessionStorage.removeItem('isFromAnalysis');
+    
+    // URL 정리
+    if (window.location.search.includes('from_reset')) {
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, newUrl);
+    }
+  }
+}
+
 // 분석 확인 기능 초기화
 function initAnalysisConfirmation() {
   const fileInput = document.getElementById('images');
@@ -950,25 +1119,31 @@ function initAnalysisConfirmation() {
         analyzeBtn.disabled = true;
         analyzeBtn.textContent = '분석 중...';
         
-        // 파일 업로드 진행 상황부터 시작
-        simulateFileUploadProgress(files, () => {
-          // Socket.IO를 통한 실시간 분석 시작
-          if (socket && isSocketConnected) {
-            const filesData = files.map(file => ({
-              name: file.name,
-              size: file.size,
-              type: file.type
-            }));
-            
-            console.log('Starting real-time analysis via Socket.IO');
-            socket.emit('start_analysis', { files: filesData });
-          } else {
-            // 대체: 기존 시뮬레이션 사용
-            console.log('Socket.IO not available, using simulation');
+        // 기존 결과 섹션 숨기기
+        hideExistingResults();
+        
+        // Socket.IO 연결 확인 후 적절한 방법 선택
+        if (socket && isSocketConnected) {
+          // 웹소켓 연결이 있으면 백엔드 신호만 사용
+          console.log('Using Socket.IO for real-time progress');
+          const filesData = files.map(file => ({
+            name: file.name,
+            size: file.size,
+            type: file.type
+          }));
+          
+          socket.emit('start_analysis', { files: filesData });
+        } else {
+          // 웹소켓이 없으면 클라이언트 시뮬레이션 사용
+          console.log('Socket.IO not available, using client simulation');
+          simulateFileUploadProgress(files, () => {
             simulateRealisticProgress(files);
-          }
-        });
+          });
+        }
       }
+      
+      // 분석 시작 플래그 설정
+      sessionStorage.setItem('isFromAnalysis', 'true');
       
       // 폼 제출 (분석 시작)
       if (form) {
@@ -989,7 +1164,7 @@ function initAnalysisConfirmation() {
 }
 
 // 영양정보 표 생성 함수
-function generateNutritionTable(fields, fullPackage) {
+function generateNutritionTable(fields, fullPackage, ocrTexts) {
   if (!fields && !fullPackage) {
     return '<div class="info-note">❌ 영양정보를 분석할 수 없습니다.</div>';
   }
@@ -1067,14 +1242,17 @@ function generateNutritionTable(fields, fullPackage) {
     <div class="nutrition-analysis">
       <div class="info-note success">✅ 이 이미지에서 영양정보가 성공적으로 분석되었습니다.</div>
       <div class="nutrition-table-container">
-        <h4>분석된 영양정보</h4>
+        <h4>📊 이 제품의 영양정보</h4>
+        <div class="table-description">
+          <small>아래는 현재 선택된 이미지에서 추출한 개별 제품의 영양성분표입니다.</small>
+        </div>
         <table class="nutrition-table">
           <thead>
             <tr>
               <th>영양소</th>
-              <th>100g당</th>
-              <th>전체 패키지</th>
-              <th>% 영양성분기준치</th>
+              <th>100g당 함량</th>
+              <th>1포장당 함량</th>
+              <th>일일기준치 대비</th>
             </tr>
           </thead>
           <tbody>
@@ -1109,12 +1287,84 @@ function generateNutritionTable(fields, fullPackage) {
           </tbody>
         </table>
         <div class="table-note">
-          <small>* % 영양성분기준치: 성인 남성 일일권장량 대비 비율</small>
+          <small>
+            * 일일기준치 대비: 성인 남성(20-49세) 기준 일일권장량 대비 비율<br>
+            * 이 정보는 현재 이미지의 개별 제품에 대한 분석 결과입니다<br>
+            * 전체 섭취량 분석은 메인 화면의 요약표를 참고하세요
+          </small>
         </div>
       </div>
+  `;
+
+  // OCR 원시 텍스트 섹션 추가
+  if (ocrTexts && ocrTexts.length > 0) {
+    tableHTML += `
+      <div class="ocr-texts-section">
+        <h4>📄 OCR 인식 텍스트</h4>
+        <div class="ocr-texts-container">
+          <div class="ocr-texts-list">
+    `;
+    
+    ocrTexts.forEach((text, index) => {
+      // 숫자와 영양정보 관련 키워드가 포함된 텍스트를 강조
+      const isNutritionText = /열량|칼로리|kcal|나트륨|탄수화물|당류|지방|포화지방|트랜스지방|콜레스테롤|단백질|내용량|총량|중량|mg|g/i.test(text);
+      const textClass = isNutritionText ? 'ocr-text nutrition-related' : 'ocr-text';
+      
+      tableHTML += `
+        <div class="${textClass}">
+          <span class="ocr-index">${index + 1}</span>
+          <span class="ocr-content">${text}</span>
+        </div>
+      `;
+    });
+    
+    tableHTML += `
+          </div>
+          <div class="ocr-note">
+            <small>🟢 녹색 배경: 영양정보 관련 텍스트</small>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  tableHTML += `
     </div>
   `;
 
   return tableHTML;
 }
+
+// 마크다운 렌더링 공통 함수
+function renderMarkdownContent(elementId, markdownText) {
+    const element = document.getElementById(elementId);
+    if (element && typeof marked !== 'undefined' && markdownText) {
+        try {
+            // 로딩 메시지 제거
+            const loadingElement = element.querySelector('.loading-markdown');
+            if (loadingElement) {
+                loadingElement.remove();
+            }
+            
+            // 마크다운 파싱 및 렌더링
+            element.innerHTML = marked.parse(markdownText);
+            console.log(`Markdown rendered for ${elementId}`);
+        } catch (error) {
+            console.error(`Failed to render markdown for ${elementId}:`, error);
+            element.innerHTML = `<p>마크다운 렌더링 중 오류가 발생했습니다.</p><pre>${markdownText}</pre>`;
+        }
+    }
+}
+
+// 페이지 로드 시 마크다운 콘텐츠 초기화
+document.addEventListener('DOMContentLoaded', function() {
+    // 마크다운 라이브러리 로드 대기
+    setTimeout(() => {
+        if (typeof marked !== 'undefined') {
+            console.log('Marked.js library loaded successfully');
+        } else {
+            console.warn('Marked.js library not loaded');
+        }
+    }, 100);
+});
 

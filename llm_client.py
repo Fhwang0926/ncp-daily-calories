@@ -1,20 +1,311 @@
 import os
 import json
 import requests
+import time
+import hashlib
 from typing import Dict, List, Any
 
 # 네이버클라우드 HyperCLOVA X LLM API 클라이언트
-# 실제 엔드포인트/API 키는 콘솔에서 발급받은 값으로 변경하세요.
+# test.py 구조를 기반으로 재작성
+
+def generate_request_id():
+    """현재 타임스탬프를 MD5 해시로 변환하여 request_id 생성"""
+    timestamp = str(time.time())
+    return hashlib.md5(timestamp.encode('utf-8')).hexdigest()
 
 HOST = os.environ.get("NCP_LLM_HOST", "https://clovastudio.stream.ntruss.com")
 API_KEY = os.environ.get("NCP_LLM_API_KEY", "")  # Bearer <api-key> 형태
-REQUEST_ID = os.environ.get("NCP_REQUEST_ID", "")
+REQUEST_ID = os.environ.get("NCP_REQUEST_ID", generate_request_id())
+
+class CompletionExecutor:
+    """test.py를 기반으로 한 완성도 높은 LLM 클라이언트"""
+    
+    def __init__(self, host, api_key, request_id):
+        self._host = host
+        self._api_key = api_key
+        self._request_id = request_id
+        
+
+    def execute_streaming(self, completion_request, socketio=None, session_id=None):
+        """스트리밍 방식으로 LLM 응답을 처리"""
+        headers = {
+            'Authorization': self._api_key,
+            'X-NCP-CLOVASTUDIO-REQUEST-ID': self._request_id,
+            'Content-Type': 'application/json; charset=utf-8',
+            'Accept': 'text/event-stream'
+        }
+
+        print(f"DEBUG: Making LLM request to {self._host + '/v3/chat-completions/HCX-005'}")
+        print(f"DEBUG: Request data: {json.dumps(completion_request, ensure_ascii=False, indent=2)}")
+
+        try:
+            full_response = ""
+            
+            # 연결 중 메시지
+            if socketio and session_id:
+                socketio.emit('llm_response', {
+                    'data': "🔗 AI 서버에 연결 중...", 
+                    'type': 'connecting'
+                }, room=session_id)
+            
+            with requests.post(self._host + '/v3/chat-completions/HCX-005',
+                             headers=headers, json=completion_request, stream=True, timeout=30) as r:
+                
+                print(f"DEBUG: Response status: {r.status_code}")
+                # print(f"DEBUG: Response status: {r.text}")
+                
+                if r.status_code != 200:
+                    print(f"DEBUG: LLM API error status: {r.status_code}")
+                    print(f"DEBUG: Response content: {r.text}")
+                    # 에러 메시지 전송
+                    if socketio and session_id:
+                        socketio.emit('llm_response', {
+                            'data': "❌ AI 서버 연결 오류", 
+                            'type': 'error'
+                        }, room=session_id)
+                    return None
+                
+                # 응답 스트림 시작 메시지
+                if socketio and session_id:
+                    socketio.emit('llm_response', {
+                        'data': "💭 AI가 응답을 생성하고 있습니다", 
+                        'type': 'generating'
+                    }, room=session_id)
+                
+                response_started = False
+                for line in r.iter_lines():
+                    if line:
+                        line_str = line.decode("utf-8")
+                        # print(f"DEBUG: Raw line: {line_str}")
+                        
+                        if line_str.startswith('data:'):
+                            try:
+                                json_str = line_str[5:]  # 'data:' 제거
+                                if json_str.strip() == '[DONE]':
+                                    print("DEBUG: Stream completed")
+                                    break
+                                    
+                                json_data = json.loads(json_str)
+                                # print(f"DEBUG: Parsed JSON: {json_data}")
+                                
+                                # 메시지 내용 추출
+                                if 'message' in json_data and 'content' in json_data['message']:
+                                    content = json_data['message']['content']
+                                    if content:
+                                        # 첫 번째 응답 시작 시 메시지 변경
+                                        if not response_started:
+                                            response_started = True
+                                            print(f"DEBUG: First content received: {content[:50]}...")
+                                            if socketio and session_id:
+                                                socketio.emit('llm_response', {
+                                                    'data': "✨ AI 영양사가 답변하고 있습니다...", 
+                                                    'type': 'responding'
+                                                }, room=session_id)
+                                        
+                                        full_response += content
+                                        # print(f"DEBUG: Content chunk: {content}")  # 너무 많은 로그 방지
+                                        
+                                        # 실시간으로 소켓을 통해 전송
+                                        if socketio and session_id:
+                                            socketio.emit('llm_response', {
+                                                'data': content, 
+                                                'type': 'chunk',
+                                                'full_response': full_response
+                                            }, room=session_id)
+                                else:
+                                    print(f"DEBUG: Unexpected JSON structure: {json_data}")
+                                            
+                            except json.JSONDecodeError as e:
+                                print(f"DEBUG: JSON decode error: {e}")
+                                continue
+                
+                print(f"DEBUG: Full LLM response: {full_response}")
+                print(f"DEBUG: Response length: {len(full_response) if full_response else 0}")
+                
+                # 응답이 있는지 확인
+                if full_response and full_response.strip():
+                    print("DEBUG: LLM returned valid response")
+                    # 완료 신호 전송
+                    if socketio and session_id:
+                        socketio.emit('llm_response', {
+                            'data': full_response, 
+                            'type': 'complete'
+                        }, room=session_id)
+                    return full_response
+                else:
+                    print("DEBUG: LLM returned empty or invalid response")
+                    return None
+                
+        except requests.exceptions.Timeout:
+            print("DEBUG: LLM API timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"DEBUG: LLM API request error: {e}")
+            return None
+        except Exception as e:
+            print(f"DEBUG: Unexpected error: {e}")
+            return None
+
+# 전역 클라이언트 인스턴스
+llm_client = None
+if API_KEY:
+    # REQUEST_ID가 환경변수에 없으면 자동으로 타임스탬프 MD5 해시 생성
+    request_id = REQUEST_ID if REQUEST_ID else generate_request_id()
+    llm_client = CompletionExecutor(HOST, API_KEY, request_id)
+
+def get_comprehensive_nutrition_analysis_streaming(totals: Dict[str, float], male_pct: Dict[str, float], female_pct: Dict[str, float], deficient_nutrients: Dict[str, float], excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male", socketio=None, session_id=None):
+    """
+    전체 영양 분석 결과를 기반으로 종합적인 추천을 생성합니다.
+    부족/과다 영양소를 모두 고려하여 한 번에 완전한 분석을 제공합니다.
+    """
+    if not llm_client:
+        print("DEBUG: LLM client not available, using statistical recommendation")
+        result = get_statistical_comprehensive_recommendation(deficient_nutrients, excessive_nutrients, rdi_info, gender)
+        if socketio and session_id:
+            socketio.emit('llm_response', {'data': result, 'type': 'complete'}, room=session_id)
+        return result
+    
+    # 부족한 영양소 목록 생성
+    deficient_list = []
+    for nutrient, deficit in deficient_nutrients.items():
+        nutrient_name = get_nutrient_korean_name(nutrient)
+        rdi_amount = rdi_info.get(nutrient, 0)
+        if rdi_amount > 0:
+            current_amount = totals.get(nutrient, 0)
+            percentage_current = round((current_amount / rdi_amount) * 100, 1)
+            percentage_deficit = round((deficit / rdi_amount) * 100, 1)
+            deficient_list.append(f"{nutrient_name} (현재 {percentage_current}%, {percentage_deficit}% 부족)")
+    
+    # 과다 섭취 영양소 목록 생성
+    excessive_list = []
+    for nutrient, excess in excessive_nutrients.items():
+        nutrient_name = get_nutrient_korean_name(nutrient)
+        rdi_amount = rdi_info.get(nutrient, 0)
+        if rdi_amount > 0:
+            current_amount = totals.get(nutrient, 0)
+            percentage_current = round((current_amount / rdi_amount) * 100, 1)
+            excessive_list.append(f"{nutrient_name} (현재 {percentage_current}%)")
+    
+    # 적정 수준 영양소 목록 생성
+    optimal_list = []
+    for nutrient, current_amount in totals.items():
+        if nutrient in rdi_info and rdi_info[nutrient] > 0:
+            if nutrient not in deficient_nutrients and nutrient not in excessive_nutrients:
+                nutrient_name = get_nutrient_korean_name(nutrient)
+                percentage_current = round((current_amount / rdi_info[nutrient]) * 100, 1)
+                optimal_list.append(f"{nutrient_name} ({percentage_current}%)")
+    
+    # 성별 정보
+    gender_info = {
+        "male": "성인 남성(20-49세)",
+        "female": "성인 여성(20-49세)"
+    }
+    
+    gender_specific_advice = {
+        "male": "남성의 근육량, 기초대사율, 활동량을 고려한",
+        "female": "여성의 철분 필요량, 호르몬 변화, 임신/수유 가능성을 고려한"
+    }
+    
+    # 종합 분석 프롬프트 생성
+    prompt = f"""다음은 {gender_info[gender]}의 하루 영양소 섭취 분석 결과입니다:
+
+📊 **영양소 상태 분석:**
+
+🔴 **부족한 영양소 ({len(deficient_list)}개):**
+{chr(10).join([f"• {item}" for item in deficient_list]) if deficient_list else "• 없음 (모든 영양소 충족)"}
+
+⚠️ **과다 섭취 영양소 ({len(excessive_list)}개):**
+{chr(10).join([f"• {item}" for item in excessive_list]) if excessive_list else "• 없음 (모든 영양소 적정 수준)"}
+
+✅ **적정 수준 영양소 ({len(optimal_list)}개):**
+{chr(10).join([f"• {item}" for item in optimal_list[:5]]) if optimal_list else "• 없음"}
+{"..." if len(optimal_list) > 5 else ""}
+
+🎯 **요청사항:**
+{gender_specific_advice[gender]} 종합적인 영양 개선 방안을 제시해주세요.
+
+**포함할 내용:**
+1. **전체적인 영양 상태 평가** (한 줄 요약)
+2. **우선순위별 개선 방안** (가장 중요한 것부터 3개)
+3. **구체적인 식단 조정 방법** (추가할 음식, 줄일 음식)
+4. **{gender_info[gender]} 맞춤 조언** (생활습관, 주의사항)
+5. **실천 가능한 단계별 계획** (1주차, 2-4주차 목표)
+
+**응답 형식:**
+- 마크다운 문법을 사용해서 응답해주세요
+- 제목은 ##, ### 등의 헤딩 태그 사용
+- 중요한 내용은 **굵은 글씨** 강조
+- 목록은 - 또는 1. 사용
+- 음식명이나 영양소는 `코드 블록` 사용
+- 필요시 표(table) 형식도 활용
+
+한국인이 쉽게 구할 수 있는 음식 위주로 현실적이고 실천 가능한 방안을 제시해주세요."""
+
+    # 진행 중 상태 표시를 위한 초기 메시지
+    if socketio and session_id:
+        socketio.emit('llm_response', {
+            'data': "🤖 AI 영양사가 분석 중입니다.", 
+            'type': 'thinking'
+        }, room=session_id)
+
+    # test.py와 동일한 요청 데이터 구조
+    completion_request = {
+        "messages": [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "너는 임상영양학을 전공한 영양박사야. 한국인의 식습관과 생활패턴을 잘 알고 있으며, 개인의 전체적인 영양 상태를 종합 분석하여 실용적이고 과학적인 맞춤형 조언을 제공한다. 모든 응답은 마크다운 문법을 사용해서 구조화된 형태로 제공한다."
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "topP": 0.8,
+        "topK": 0,
+        "maxTokens": 1500,
+        "temperature": 0.5,
+        "repetitionPenalty": 1.1,
+        "stop": [],
+        "seed": 0,
+        "includeAiFilters": True
+    }
+    
+    print(f"DEBUG: Calling LLM for comprehensive {gender} analysis")
+    
+    # test.py 기반 CompletionExecutor 사용
+    result = llm_client.execute_streaming(completion_request, socketio, session_id)
+    
+    if result and result.strip():
+        # LLM이 실제 내용이 있는 응답을 반환한 경우
+        print(f"DEBUG: LLM success for {gender} - response length: {len(result)}")
+        print(f"DEBUG: LLM response starts with: {result[:100]}...")
+        return result
+    else:
+        print(f"DEBUG: LLM API failed or returned empty response for {gender}, falling back to statistical recommendation")
+        print(f"DEBUG: Result was: {repr(result)}")
+        fallback_result = get_statistical_comprehensive_recommendation(deficient_nutrients, excessive_nutrients, rdi_info, gender, is_fallback=True)
+        if socketio and session_id:
+            socketio.emit('llm_response', {'data': fallback_result, 'type': 'complete'}, room=session_id)
+        return fallback_result
+
 
 def get_nutrition_recommendation_streaming(deficient_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male", socketio=None, session_id=None):
     """
     스트리밍 방식으로 부족한 영양소 보충 추천을 생성합니다.
+    test.py 기반 CompletionExecutor 사용
     """
-    if not API_KEY or not API_KEY.strip():
+    if not llm_client:
+        print("DEBUG: LLM client not available, using statistical recommendation")
         result = get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
         if socketio and session_id:
             socketio.emit('llm_response', {'data': result, 'type': 'complete'}, room=session_id)
@@ -50,27 +341,43 @@ def get_nutrition_recommendation_streaming(deficient_nutrients: Dict[str, float]
     prompt = f"""다음 영양소들이 {gender_info[gender]} 기준으로 부족합니다:
 {', '.join(deficient_list)}
 
-{gender_specific_advice[gender]} 부족한 영양소를 효과적으로 보충할 수 있는 음식이나 식품을 추천해주세요. 
-각 추천 음식에 대해 다음 정보를 포함해주세요:
-1. 음식명
-2. 보충할 수 있는 주요 영양소
-3. {gender_info[gender]} 권장 섭취량
-4. 간단한 조리법이나 섭취 방법
-5. {gender_info[gender]}에게 특히 중요한 이유
+{gender_specific_advice[gender]} 부족한 영양소를 보충할 수 있는 음식이나 식품을 추천해주세요.
+각 부족한 영양소에 대해 다음 정보를 포함해주세요:
+1. 해당 영양소가 풍부한 음식들
+2. {gender_info[gender]} 일일 권장 섭취량
+3. 실생활에서 쉽게 실천할 수 있는 방법
+4. {gender_info[gender]}에게 특히 중요한 이유
 
-한국인이 쉽게 구할 수 있고 일상적으로 섭취할 수 있는 음식 위주로 추천해주세요."""
+**응답 형식:**
+- 마크다운 문법을 사용해서 응답해주세요
+- 각 영양소별로 ### 제목 사용
+- 음식명은 `코드 블록` 사용
+- 중요한 내용은 **굵은 글씨** 강조
+- 권장 섭취량은 표(table) 형식 활용
 
-    headers = {
-        "Authorization": API_KEY,
-        "X-NCP-CLOVASTUDIO-REQUEST-ID": REQUEST_ID,
-        "Content-Type": "application/json; charset=utf-8",
-        "Accept": "text/event-stream"
-    }
-    
-    data = {
+한국인이 쉽게 구할 수 있는 음식 위주로 추천해주세요."""
+
+    # test.py와 동일한 요청 데이터 구조
+    completion_request = {
         "messages": [
-            {"role": "system", "content": [{"type": "text", "text": "너는 영양학을 전공한 영양박사야. 한국인의 식습관과 영양 상태를 잘 알고 있으며, 실용적이고 과학적인 영양 조언을 제공한다."}]},
-            {"role": "user", "content": [{"type": "text", "text": prompt}]}
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "너는 영양학을 전공한 영양박사야. 한국인의 식습관과 영양 상태를 잘 알고 있으며, 실용적이고 과학적인 영양 조언을 제공한다. 모든 응답은 마크다운 문법을 사용해서 구조화된 형태로 제공한다."
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    }
+                ]
+            }
         ],
         "topP": 0.8,
         "topK": 0,
@@ -82,115 +389,48 @@ def get_nutrition_recommendation_streaming(deficient_nutrients: Dict[str, float]
         "includeAiFilters": True
     }
     
-    print(f"DEBUG: Making streaming request to {HOST + '/v3/chat-completions/HCX-005'}")
+    print("DEBUG: Calling LLM for nutrition recommendation")
     
-    try:
-        response = requests.post(
-            HOST + '/v3/chat-completions/HCX-005',
-            headers=headers,
-            json=data,
-            stream=True,
-            timeout=30
-        )
-        
-        print(f"DEBUG: Response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            # 스트리밍 응답 처리
-            full_response = ""
-            for line in response.iter_lines():
-                if line:
-                    line_str = line.decode('utf-8')
-                    if line_str.startswith('data: '):
-                        try:
-                            json_data = json.loads(line_str[6:])  # 'data: ' 제거
-                            if 'message' in json_data and 'content' in json_data['message']:
-                                content = json_data['message']['content']
-                                full_response += content
-                                
-                                # 실시간으로 소켓을 통해 전송
-                                if socketio and session_id:
-                                    socketio.emit('llm_response', {
-                                        'data': content, 
-                                        'type': 'chunk',
-                                        'full_response': full_response
-                                    }, room=session_id)
-                                    
-                        except json.JSONDecodeError as e:
-                            print(f"DEBUG: JSON decode error: {e}")
-                            continue
-            
-            print(f"DEBUG: Full response: {full_response}")
-            
-            # 완료 신호 전송
-            if socketio and session_id:
-                socketio.emit('llm_response', {
-                    'data': full_response, 
-                    'type': 'complete'
-                }, room=session_id)
-                
-            return full_response if full_response else "추천 정보를 가져올 수 없습니다."
-        else:
-            error_text = response.text
-            print(f"DEBUG: Error response: {error_text}")
-            print("DEBUG: LLM API error, falling back to statistical recommendation")
-            result = get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
-            if socketio and session_id:
-                socketio.emit('llm_response', {'data': result, 'type': 'complete'}, room=session_id)
-            return result
-            
-    except requests.exceptions.Timeout:
-        print("DEBUG: LLM API timeout, falling back to statistical recommendation")
-        result = get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
+    # test.py 기반 CompletionExecutor 사용
+    result = llm_client.execute_streaming(completion_request, socketio, session_id)
+    
+    if result and result.strip():
+        # LLM이 실제 내용이 있는 응답을 반환한 경우
+        return result
+    else:
+        print("DEBUG: LLM API failed or returned empty response, falling back to statistical recommendation")
+        fallback_result = get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
+        if socketio and session_id:
+            socketio.emit('llm_response', {'data': fallback_result, 'type': 'complete'}, room=session_id)
+        return fallback_result
+
+
+def get_reduction_recommendation_streaming(excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male", socketio=None, session_id=None):
+    """
+    스트리밍 방식으로 과다 섭취 영양소 감소 방법을 생성합니다.
+    test.py 기반 CompletionExecutor 사용
+    """
+    if not llm_client:
+        print("DEBUG: LLM client not available, using statistical recommendation")
+        result = get_statistical_reduction_recommendation(excessive_nutrients, rdi_info, gender)
         if socketio and session_id:
             socketio.emit('llm_response', {'data': result, 'type': 'complete'}, room=session_id)
         return result
-    except requests.exceptions.RequestException as e:
-        print(f"DEBUG: LLM API error: {str(e)}, falling back to statistical recommendation")
-        result = get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
-        if socketio and session_id:
-            socketio.emit('llm_response', {'data': result, 'type': 'complete'}, room=session_id)
-        return result
-    except Exception as e:
-        result = f"⚠️ 오류 발생: {str(e)}"
-        if socketio and session_id:
-            socketio.emit('llm_response', {'data': result, 'type': 'error'}, room=session_id)
-        return result
-
-
-def get_nutrition_recommendation(deficient_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male") -> str:
-    """
-    부족한 영양소를 보충하기 위한 음식 추천을 LLM에 요청합니다.
-    API가 없거나 에러 시 통계 기반 추천을 제공합니다.
     
-    Args:
-        deficient_nutrients: 부족한 영양소와 부족량 정보
-        rdi_info: 일일 권장량 정보
-        gender: 성별 ("male" 또는 "female")
-    
-    Returns:
-        LLM 또는 통계 기반 추천 결과
-    """
-    print(f"DEBUG: API_KEY exists: {bool(API_KEY)}")
-    print(f"DEBUG: HOST: {HOST}")
-    print(f"DEBUG: REQUEST_ID: {REQUEST_ID}")
-    print(f"DEBUG: Deficient nutrients: {deficient_nutrients}")
-    
-    # API 키가 없거나 빈 경우 통계 기반 추천으로 대체
-    if not API_KEY or not API_KEY.strip():
-        return get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
-    
-    # 부족한 영양소 목록 생성
-    deficient_list = []
-    for nutrient, deficit in deficient_nutrients.items():
+    # 과다 섭취한 영양소 목록 생성
+    excessive_list = []
+    for nutrient, excess in excessive_nutrients.items():
         nutrient_name = get_nutrient_korean_name(nutrient)
         rdi_amount = rdi_info.get(nutrient, 0)
         if rdi_amount > 0:
-            percentage_deficit = round((deficit / rdi_amount) * 100, 1)
-            deficient_list.append(f"{nutrient_name} ({percentage_deficit}% 부족)")
+            percentage_excess = round((excess / rdi_amount) * 100, 1)
+            excessive_list.append(f"{nutrient_name} ({percentage_excess}% 초과)")
     
-    if not deficient_list:
-        return "현재 모든 영양소가 충분히 섭취되었습니다! 👍"
+    if not excessive_list:
+        result = "현재 과다 섭취한 영양소가 없습니다! 👍"
+        if socketio and session_id:
+            socketio.emit('llm_response', {'data': result, 'type': 'complete'}, room=session_id)
+        return result
     
     # 성별에 따른 맞춤형 프롬프트 생성
     gender_info = {
@@ -204,39 +444,41 @@ def get_nutrition_recommendation(deficient_nutrients: Dict[str, float], rdi_info
     }
     
     # 프롬프트 생성
-    prompt = f"""다음 영양소들이 {gender_info[gender]} 기준으로 부족합니다:
-{', '.join(deficient_list)}
+    prompt = f"""다음 영양소들이 {gender_info[gender]} 기준으로 과다 섭취되었습니다:
+{', '.join(excessive_list)}
 
-{gender_specific_advice[gender]} 부족한 영양소를 효과적으로 보충할 수 있는 음식이나 식품을 추천해주세요. 
-각 추천 음식에 대해 다음 정보를 포함해주세요:
-1. 음식명
-2. 보충할 수 있는 주요 영양소
-3. {gender_info[gender]} 권장 섭취량
-4. 간단한 조리법이나 섭취 방법
-5. {gender_info[gender]}에게 특히 중요한 이유
+{gender_specific_advice[gender]} 과다 섭취한 영양소를 효과적으로 줄일 수 있는 방법을 추천해주세요.
+각 과다 영양소에 대해 다음 정보를 포함해주세요:
+1. 줄여야 할 음식들
+2. 대체할 수 있는 음식들
+3. {gender_info[gender]} 적정 섭취량
+4. 실생활에서 실천할 수 있는 구체적인 방법
+5. {gender_info[gender]}에게 특히 주의해야 하는 이유
 
-한국인이 쉽게 구할 수 있고 일상적으로 섭취할 수 있는 음식 위주로 추천해주세요."""
+**응답 형식:**
+- 마크다운 문법을 사용해서 응답해주세요
+- 각 영양소별로 ### 제목 사용
+- 줄여야 할 음식은 ❌ `음식명`
+- 대체 음식은 ✅ `음식명`
+- 중요한 주의사항은 **굵은 글씨** 강조
+- 적정 섭취량은 표(table) 형식 활용
 
-    headers = {
-        "Authorization": API_KEY,
-        "X-NCP-CLOVASTUDIO-REQUEST-ID": REQUEST_ID,
-        "Content-Type": "application/json; charset=utf-8",
-        "Accept": "text/event-stream"
-    }
-    
-    data = {
+한국인이 쉽게 실천할 수 있는 현실적인 방법 위주로 추천해주세요."""
+
+    # test.py와 동일한 요청 데이터 구조
+    completion_request = {
         "messages": [
             {
                 "role": "system",
                 "content": [
                     {
                         "type": "text",
-                        "text": "너는 영양학을 전공한 영양박사야. 사람 나이대별로 섭취 칼로리에 따른 피드백을 제일 잘해. 예시로 나트륨이 부족한 사람은 간장 요리, 간장 게장과 같은 필요 음식이나 식품을 추천을 잘해."
+                        "text": "너는 영양학을 전공한 영양박사야. 한국인의 식습관과 영양 상태를 잘 알고 있으며, 실용적이고 과학적인 영양 조언을 제공한다. 모든 응답은 마크다운 문법을 사용해서 구조화된 형태로 제공한다."
                     }
                 ]
             },
             {
-                "role": "user", 
+                "role": "user",
                 "content": [
                     {
                         "type": "text",
@@ -255,358 +497,260 @@ def get_nutrition_recommendation(deficient_nutrients: Dict[str, float], rdi_info
         "includeAiFilters": True
     }
     
-    print(f"DEBUG: Making request to {HOST + '/v3/chat-completions/HCX-005'}")
-    print(f"DEBUG: Headers: {headers}")
+    print("DEBUG: Calling LLM for reduction recommendation")
     
-    try:
-        response = requests.post(
-            HOST + '/v3/chat-completions/HCX-005',
-            headers=headers,
-            json=data,
-            stream=True,
-            timeout=30
-        )
-        
-        print(f"DEBUG: Response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            # 스트리밍 응답 처리
-            full_response = ""
-            for line in response.iter_lines():
-                if line:
-                    line_str = line.decode('utf-8')
-                    # print(f"DEBUG: Response line: {line_str}")
-                    if line_str.startswith('data: '):
-                        try:
-                            json_data = json.loads(line_str[6:])  # 'data: ' 제거
-                            if 'message' in json_data and 'content' in json_data['message']:
-                                full_response += json_data['message']['content']
-                        except json.JSONDecodeError as e:
-                            print(f"DEBUG: JSON decode error: {e}")
-                            continue
-            
-            print(f"DEBUG: Full response: {full_response}")
-            return full_response if full_response else "추천 정보를 가져올 수 없습니다."
-        else:
-            error_text = response.text
-            print(f"DEBUG: Error response: {error_text}")
-            print("DEBUG: LLM API error, falling back to statistical recommendation")
-            return get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
-            
-    except requests.exceptions.Timeout:
-        print("DEBUG: LLM API timeout, falling back to statistical recommendation")
-        return get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
-    except requests.exceptions.RequestException as e:
-        print(f"DEBUG: LLM API error: {str(e)}, falling back to statistical recommendation")
-        return get_statistical_nutrition_recommendation(deficient_nutrients, rdi_info, gender)
-    except Exception as e:
-        return f"⚠️ 오류 발생: {str(e)}"
+    # test.py 기반 CompletionExecutor 사용
+    result = llm_client.execute_streaming(completion_request, socketio, session_id)
+    
+    if result and result.strip():
+        # LLM이 실제 내용이 있는 응답을 반환한 경우
+        return result
+    else:
+        print("DEBUG: LLM API failed or returned empty response, falling back to statistical recommendation")
+        fallback_result = get_statistical_reduction_recommendation(excessive_nutrients, rdi_info, gender)
+        if socketio and session_id:
+            socketio.emit('llm_response', {'data': fallback_result, 'type': 'complete'}, room=session_id)
+        return fallback_result
 
 
+# 기존 함수들 (비스트리밍, 호환성 유지)
+def get_nutrition_recommendation(deficient_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male") -> str:
+    """비스트리밍 버전 (호환성 유지)"""
+    return get_nutrition_recommendation_streaming(deficient_nutrients, rdi_info, gender, None, None)
+
+def get_reduction_recommendation(excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male") -> str:
+    """비스트리밍 버전 (호환성 유지)"""
+    return get_reduction_recommendation_streaming(excessive_nutrients, rdi_info, gender, None, None)
+
+
+# 영양소 한국어 이름 매핑
 def get_nutrient_korean_name(nutrient_key: str) -> str:
     """영양소 키를 한국어 이름으로 변환"""
-    name_mapping = {
-        "calories_kcal": "열량",
-        "sodium_mg": "나트륨", 
-        "carbs_g": "탄수화물",
-        "sugars_g": "당류",
-        "fat_g": "지방",
-        "sat_fat_g": "포화지방",
-        "trans_fat_g": "트랜스지방", 
-        "cholesterol_mg": "콜레스테롤",
-        "protein_g": "단백질",
-        "total_volume_g": "내용량(g)",
-        "total_volume_ml": "내용량(ml)"
+    names = {
+        'calories_kcal': '칼로리',
+        'carbs_g': '탄수화물',
+        'protein_g': '단백질',
+        'fat_g': '지방',
+        'saturated_fat_g': '포화지방',
+        'trans_fat_g': '트랜스지방',
+        'cholesterol_mg': '콜레스테롤',
+        'sodium_mg': '나트륨',
+        'potassium_mg': '칼륨',
+        'fiber_g': '식이섬유',
+        'sugars_g': '당류',
+        'calcium_mg': '칼슘',
+        'iron_mg': '철분',
+        'phosphorus_mg': '인',
+        'vitamin_a_ug': '비타민A',
+        'thiamine_mg': '티아민',
+        'riboflavin_mg': '리보플라빈',
+        'niacin_mg': '나이아신',
+        'vitamin_c_mg': '비타민C'
     }
-    return name_mapping.get(nutrient_key, nutrient_key)
+    return names.get(nutrient_key, nutrient_key)
 
 
-def calculate_deficient_nutrients(totals: Dict[str, float], rdi: Dict[str, float], threshold: float = 0.8) -> Dict[str, float]:
-    """
-    부족한 영양소를 계산합니다.
-    
-    Args:
-        totals: 현재 섭취한 영양소
-        rdi: 일일 권장량
-        threshold: 부족 판단 기준 (80% 미만을 부족으로 판단)
-    
-    Returns:
-        부족한 영양소와 부족량
-    """
+def calculate_deficient_nutrients(totals: Dict[str, float], rdi_info: Dict[str, float]) -> Dict[str, float]:
+    """부족한 영양소 계산"""
     deficient = {}
-    
-    for nutrient, current_amount in totals.items():
-        if nutrient in rdi and rdi[nutrient] > 0 and current_amount is not None:
-            required_amount = rdi[nutrient] * threshold
-            if current_amount < required_amount:
-                deficit = required_amount - current_amount
+    for nutrient, rdi_amount in rdi_info.items():
+        if nutrient in totals and rdi_amount > 0:
+            current_amount = totals[nutrient]
+            if current_amount < rdi_amount:
+                deficit = rdi_amount - current_amount
                 deficient[nutrient] = deficit
-    
     return deficient
 
 
-def calculate_excessive_nutrients(totals: Dict[str, float], rdi: Dict[str, float], threshold: float = 1.2) -> Dict[str, float]:
-    """
-    과다 섭취한 영양소를 계산합니다.
-    
-    Args:
-        totals: 현재 섭취한 영양소
-        rdi: 일일 권장량
-        threshold: 과다 판단 기준 (120% 초과를 과다로 판단)
-    
-    Returns:
-        과다 섭취한 영양소와 초과량
-    """
+def calculate_excessive_nutrients(totals: Dict[str, float], rdi_info: Dict[str, float]) -> Dict[str, float]:
+    """과다 섭취 영양소 계산"""
     excessive = {}
-    
-    for nutrient, current_amount in totals.items():
-        if nutrient in rdi and rdi[nutrient] > 0 and current_amount is not None:
-            max_recommended = rdi[nutrient] * threshold
-            if current_amount > max_recommended:
-                excess = current_amount - max_recommended
+    for nutrient, rdi_amount in rdi_info.items():
+        if nutrient in totals and rdi_amount > 0:
+            current_amount = totals[nutrient]
+            # 권장량의 150% 이상을 과다로 판단
+            excessive_threshold = rdi_amount * 1.5
+            if current_amount > excessive_threshold:
+                excess = current_amount - rdi_amount
                 excessive[nutrient] = excess
-    
     return excessive
 
 
-def get_reduction_recommendation(excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male") -> str:
-    """
-    과다 섭취한 영양소를 줄이기 위한 방법을 LLM에 요청합니다.
-    API가 없거나 에러 시 통계 기반 감소 방법을 제공합니다.
-    
-    Args:
-        excessive_nutrients: 과다 섭취한 영양소와 초과량 정보
-        rdi_info: 일일 권장량 정보
-        gender: 성별 ("male" 또는 "female")
-    
-    Returns:
-        LLM 또는 통계 기반 감소 방법
-    """
-    # API 키가 없거나 빈 경우 통계 기반 추천으로 대체
-    if not API_KEY or not API_KEY.strip():
-        return get_statistical_reduction_recommendation(excessive_nutrients, rdi_info, gender)
-    
-    # 과다 섭취한 영양소 목록 생성
-    excessive_list = []
-    for nutrient, excess in excessive_nutrients.items():
-        nutrient_name = get_nutrient_korean_name(nutrient)
-        rdi_amount = rdi_info.get(nutrient, 0)
-        if rdi_amount > 0:
-            percentage_excess = round((excess / rdi_amount) * 100, 1)
-            excessive_list.append(f"{nutrient_name} ({percentage_excess}% 초과)")
-    
-    if not excessive_list:
-        return "현재 과다 섭취한 영양소가 없습니다! 👍"
-    
-    # 프롬프트 생성
-    prompt = f"""다음 영양소들을 과다 섭취했습니다:
-{', '.join(excessive_list)}
-
-이러한 과다 섭취한 영양소를 줄이기 위한 방법을 알려주세요. 
-각 영양소에 대해 다음 정보를 포함해주세요:
-1. 과다 섭취 시 건강에 미치는 영향
-2. 줄여야 할 음식이나 식품의 종류
-3. 대체할 수 있는 건강한 음식
-4. 일상생활에서 실천할 수 있는 구체적인 방법
-
-한국인의 식습관을 고려한 실용적인 조언을 해주세요."""
-
-    headers = {
-        "Authorization": API_KEY,
-        "X-NCP-CLOVASTUDIO-REQUEST-ID": REQUEST_ID,
-        "Content-Type": "application/json; charset=utf-8",
-        "Accept": "text/event-stream"
-    }
-    
-    data = {
-        "messages": [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "너는 영양학을 전공한 영양박사야. 사용자가 과다 섭취한 영양소를 줄일 수 있는 실용적이고 안전한 방법을 제안해주세요."
-                    }
-                ]
-            },
-            {
-                "role": "user", 
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }
-        ],
-        "topP": 0.8,
-        "topK": 0,
-        "maxTokens": 1000,
-        "temperature": 0.5,
-        "repetitionPenalty": 1.1,
-        "stop": [],
-        "seed": 0,
-        "includeAiFilters": True
-    }
-    
-    try:
-        response = requests.post(
-            HOST + '/v3/chat-completions/HCX-005',
-            headers=headers,
-            json=data,
-            stream=True,
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            # 스트리밍 응답 처리
-            full_response = ""
-            for line in response.iter_lines():
-                if line:
-                    line_str = line.decode('utf-8')
-                    if line_str.startswith('data: '):
-                        try:
-                            json_data = json.loads(line_str[6:])  # 'data: ' 제거
-                            if 'message' in json_data and 'content' in json_data['message']:
-                                full_response += json_data['message']['content']
-                        except json.JSONDecodeError:
-                            continue
-            
-            return full_response if full_response else "감소 방법 정보를 가져올 수 없습니다."
-        else:
-            print(f"DEBUG: LLM API error for reduction, falling back to statistical recommendation")
-            return get_statistical_reduction_recommendation(excessive_nutrients, rdi_info, gender)
-            
-    except requests.exceptions.Timeout:
-        print("DEBUG: LLM API timeout for reduction, falling back to statistical recommendation")
-        return get_statistical_reduction_recommendation(excessive_nutrients, rdi_info, gender)
-    except requests.exceptions.RequestException as e:
-        print(f"DEBUG: LLM API error for reduction: {str(e)}, falling back to statistical recommendation")
-        return get_statistical_reduction_recommendation(excessive_nutrients, rdi_info, gender)
-    except Exception as e:
-        return f"⚠️ 오류 발생: {str(e)}"
-
-
-def get_statistical_nutrition_recommendation(deficient_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male") -> str:
-    """
-    통계 기반으로 부족한 영양소 보충 음식을 추천합니다.
-    LLM API가 없거나 에러가 발생한 경우의 대안 방법입니다.
-    """
+# 통계 기반 추천 (API 없을 때 대체)
+def get_statistical_nutrition_recommendation(deficient_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male", is_fallback: bool = True) -> str:
+    """API 없을 때 통계 기반 추천"""
     if not deficient_nutrients:
         return "현재 모든 영양소가 충분히 섭취되었습니다! 👍"
     
-    # 영양소별 음식 매칭 데이터베이스
-    nutrition_foods = {
-        'calories_kcal': ['밥', '빵', '견과류', '오일'],
-        'protein_g': ['계란', '닭가슴살', '두부', '콩류', '생선'],
-        'carbs_g': ['밥', '고구마', '바나나', '오트밀', '현미'],
-        'fat_g': ['견과류', '아보카도', '올리브오일', '연어'],
-        'fiber_g': ['현미', '오트밀', '사과', '브로콜리', '콩류'],
-        'sodium_mg': ['김치', '된장', '간장', '젓갈류'],
-        'potassium_mg': ['바나나', '감자', '시금치', '아보카도'],
-        'calcium_mg': ['우유', '치즈', '멸치', '브로콜리', '참깨'],
-        'iron_mg': ['시금치', '간', '굴', '소고기', '콩류'],
-        'vitamin_a_ug': ['당근', '고구마', '시금치', '간', '달걀'],
-        'vitamin_c_mg': ['오렌지', '키위', '브로콜리', '딸기', '토마토'],
-        'thiamine_mg': ['돼지고기', '현미', '콩류', '견과류'],
-        'riboflavin_mg': ['우유', '계란', '간', '아몬드'],
-        'niacin_mg': ['닭고기', '참치', '버섯', '땅콩'],
-        'phosphorus_mg': ['생선', '유제품', '견과류', '콩류']
-    }
+    recommendations = []
     
-    gender_info = "성인 남성" if gender == "male" else "성인 여성"
-    
-    recommendation_parts = []
-    recommendation_parts.append("🔍 **AI 키가 설정되지 않아 통계 기반으로 추천을 제공합니다**")
-    recommendation_parts.append("")
-    recommendation_parts.append(f"📊 **{gender_info} 기준 부족한 영양소 보충 방법:**")
-    recommendation_parts.append("")
-    
-    for nutrient, deficit in deficient_nutrients.items():
-        nutrient_name = get_nutrient_korean_name(nutrient)
-        rdi_amount = rdi_info.get(nutrient, 0)
-        
-        if rdi_amount > 0:
-            percentage_deficit = round((deficit / rdi_amount) * 100, 1)
-            foods = nutrition_foods.get(nutrient, ['균형잡힌 식품'])
-            
-            recommendation_parts.append(f"**{nutrient_name}** ({percentage_deficit}% 부족)")
-            recommendation_parts.append(f"• 추천 음식: {', '.join(foods[:3])}")
-            if gender == "female" and nutrient in ['iron_mg', 'calcium_mg']:
-                recommendation_parts.append(f"• {gender_info}에게 특히 중요한 영양소입니다")
-            elif gender == "male" and nutrient in ['protein_g', 'calories_kcal']:
-                recommendation_parts.append(f"• {gender_info}의 높은 기초대사율을 고려하여 충분히 섭취하세요")
-            recommendation_parts.append("")
-    
-    recommendation_parts.append("💡 **일반적인 조언:**")
-    recommendation_parts.append("• 균형잡힌 식사를 통해 다양한 영양소를 섭취하세요")
-    recommendation_parts.append("• 가공식품보다는 자연식품을 선택하세요")
-    recommendation_parts.append("• 충분한 수분 섭취도 중요합니다")
-    
-    return "\n".join(recommendation_parts)
-
-
-def get_statistical_reduction_recommendation(excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male") -> str:
-    """
-    통계 기반으로 과다 섭취한 영양소 감소 방법을 추천합니다.
-    LLM API가 없거나 에러가 발생한 경우의 대안 방법입니다.
-    """
-    if not excessive_nutrients:
-        return "현재 과다 섭취한 영양소가 없습니다! 👍"
-    
-    # 영양소별 감소 방법 데이터베이스
-    reduction_advice = {
-        'sodium_mg': {
-            'foods_to_reduce': ['라면', '김치', '젓갈', '가공식품', '패스트푸드'],
-            'alternatives': ['신선한 채소', '무염 견과류', '허브 양념'],
-            'tips': ['음식을 만들 때 소금 대신 허브나 향신료 사용', '가공식품 섭취 줄이기']
-        },
-        'fat_g': {
-            'foods_to_reduce': ['튀김류', '삼겹살', '버터', '마요네즈'],
-            'alternatives': ['구이나 찜 요리', '올리브오일', '아보카도'],
-            'tips': ['조리법을 튀김에서 굽기나 찜으로 변경', '지방 함량이 낮은 단백질 선택']
-        },
+    food_recommendations = {
         'calories_kcal': {
-            'foods_to_reduce': ['고칼로리 간식', '단 음료', '알코올'],
-            'alternatives': ['과일', '물', '무칼로리 음료'],
-            'tips': ['식사량 조절', '간식 대신 과일 선택', '규칙적인 운동']
+            'male': '견과류(아몬드, 호두), 아보카도, 바나나, 현미밥',
+            'female': '견과류(아몬드, 호두), 아보카도, 바나나, 현미밥'
+        },
+        'protein_g': {
+            'male': '닭가슴살, 달걀, 두부, 생선(연어, 고등어)',
+            'female': '닭가슴살, 달걀, 두부, 생선(연어, 고등어)'
         },
         'carbs_g': {
-            'foods_to_reduce': ['흰밥', '빵', '과자', '단 음료'],
-            'alternatives': ['현미', '통곡물', '채소'],
-            'tips': ['단순 탄수화물을 복합 탄수화물로 교체', '섬유질이 풍부한 식품 선택']
+            'male': '현미, 고구마, 귀리, 바나나',
+            'female': '현미, 고구마, 귀리, 바나나'
+        },
+        'fat_g': {
+            'male': '올리브오일, 견과류, 아보카도, 연어',
+            'female': '올리브오일, 견과류, 아보카도, 연어'
+        },
+        'calcium_mg': {
+            'male': '우유, 요거트, 치즈, 멸치, 시금치',
+            'female': '우유, 요거트, 치즈, 멸치, 시금치'
+        },
+        'iron_mg': {
+            'male': '시금치, 소고기, 닭고기, 콩류',
+            'female': '시금치, 소고기, 닭고기, 콩류, 굴'
+        },
+        'sodium_mg': {
+            'male': '김치, 된장, 간장 (적당량)',
+            'female': '김치, 된장, 간장 (적당량)'
+        },
+        'vitamin_c_mg': {
+            'male': '오렌지, 키위, 딸기, 브로콜리, 파프리카',
+            'female': '오렌지, 키위, 딸기, 브로콜리, 파프리카'
         }
     }
     
-    gender_info = "성인 남성" if gender == "male" else "성인 여성"
-    
-    recommendation_parts = []
-    recommendation_parts.append("🔍 **AI 키가 설정되지 않아 통계 기반으로 감소 방법을 제공합니다**")
-    recommendation_parts.append("")
-    recommendation_parts.append(f"⚠️ **{gender_info} 기준 과다 섭취 영양소 감소 방법:**")
-    recommendation_parts.append("")
-    
-    for nutrient, excess in excessive_nutrients.items():
+    for nutrient in deficient_nutrients:
         nutrient_name = get_nutrient_korean_name(nutrient)
-        rdi_amount = rdi_info.get(nutrient, 0)
-        
-        if rdi_amount > 0:
-            percentage_excess = round((excess / rdi_amount) * 100, 1)
-            advice = reduction_advice.get(nutrient, {
-                'foods_to_reduce': ['과도한 섭취 식품'],
-                'alternatives': ['균형잡힌 대안 식품'],
-                'tips': ['적정량 섭취 조절']
-            })
-            
-            recommendation_parts.append(f"**{nutrient_name}** ({percentage_excess}% 초과)")
-            recommendation_parts.append(f"• 줄여야 할 음식: {', '.join(advice['foods_to_reduce'][:3])}")
-            recommendation_parts.append(f"• 대안 음식: {', '.join(advice['alternatives'][:3])}")
-            recommendation_parts.append(f"• 실천 방법: {advice['tips'][0]}")
-            recommendation_parts.append("")
+        if nutrient in food_recommendations:
+            foods = food_recommendations[nutrient][gender]
+            recommendations.append(f"• {nutrient_name}: {foods}")
     
-    recommendation_parts.append("💡 **일반적인 조언:**")
-    recommendation_parts.append("• 식품 영양성분표를 확인하는 습관을 기르세요")
-    recommendation_parts.append("• 적당한 운동으로 신진대사를 활발하게 하세요")
-    recommendation_parts.append("• 규칙적인 식사 시간을 유지하세요")
+    gender_text = "남성" if gender == "male" else "여성"
     
-    return "\n".join(recommendation_parts)
+    if is_fallback:
+        result = f"⚠️ AI 추천 서비스를 이용하려면 API 키가 필요합니다.\n\n📊 통계 기반 {gender_text} 맞춤 추천:\n\n" + "\n".join(recommendations)
+        result += f"\n\n💡 {gender_text}에게 특히 중요한 영양소들을 위주로 선별된 음식들입니다."
+    else:
+        result = f"📊 {gender_text} 맞춤 영양 추천:\n\n" + "\n".join(recommendations)
+        result += f"\n\n💡 {gender_text}에게 특히 중요한 영양소들을 위주로 선별된 음식들입니다."
+    
+    return result
+
+
+def get_statistical_comprehensive_recommendation(deficient_nutrients: Dict[str, float], excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male", is_fallback: bool = True) -> str:
+    """종합적인 통계 기반 추천 (API 없을 때 대체)"""
+    gender_text = "남성" if gender == "male" else "여성"
+    
+    if is_fallback:
+        result = f"⚠️ AI 추천 서비스를 이용하려면 API 키가 필요합니다.\n\n📊 통계 기반 {gender_text} 종합 영양 분석:\n\n"
+    else:
+        result = f"📊 {gender_text} 종합 영양 분석:\n\n"
+    
+    # 전체적인 상태 평가
+    total_issues = len(deficient_nutrients) + len(excessive_nutrients)
+    if total_issues == 0:
+        result += "🎉 **전체 평가:** 모든 영양소가 적정 수준으로 매우 양호한 상태입니다!\n\n"
+    elif total_issues <= 3:
+        result += f"✅ **전체 평가:** {total_issues}개 영양소에 주의가 필요하지만 전반적으로 양호한 상태입니다.\n\n"
+    else:
+        result += f"⚠️ **전체 평가:** {total_issues}개 영양소 개선이 필요하여 식단 조정을 권장합니다.\n\n"
+    
+    # 부족한 영양소 대응
+    if deficient_nutrients:
+        result += "🔴 **부족한 영양소 개선 방안:**\n"
+        for nutrient in list(deficient_nutrients.keys())[:3]:  # 상위 3개만
+            nutrient_name = get_nutrient_korean_name(nutrient)
+            if nutrient == 'protein_g':
+                foods = "닭가슴살, 달걀, 두부, 생선" if gender == "male" else "닭가슴살, 달걀, 두부, 콩류"
+            elif nutrient == 'calcium_mg':
+                foods = "우유, 멸치, 치즈, 시금치" if gender == "male" else "우유, 멸치, 치즈, 케일"
+            elif nutrient == 'iron_mg':
+                foods = "소고기, 시금치, 콩류" if gender == "male" else "소고기, 시금치, 굴, 콩류"
+            elif nutrient == 'vitamin_c_mg':
+                foods = "오렌지, 키위, 브로콜리, 파프리카"
+            elif nutrient == 'fiber_g':
+                foods = "현미, 고구마, 사과, 양배추"
+            else:
+                foods = "균형 잡힌 식단"
+            result += f"• {nutrient_name}: {foods}\n"
+        result += "\n"
+    
+    # 과다 영양소 대응
+    if excessive_nutrients:
+        result += "⚠️ **과다 섭취 영양소 조절 방안:**\n"
+        for nutrient in list(excessive_nutrients.keys())[:3]:  # 상위 3개만
+            nutrient_name = get_nutrient_korean_name(nutrient)
+            if nutrient == 'sodium_mg':
+                advice = "라면, 찌개류 줄이고 신선한 채소 늘리기"
+            elif nutrient == 'saturated_fat_g':
+                advice = "튀김, 버터 줄이고 올리브오일, 견과류로 대체"
+            elif nutrient == 'sugars_g':
+                advice = "음료수, 과자 줄이고 신선한 과일로 대체"
+            else:
+                advice = "섭취량 조절 및 균형 맞추기"
+            result += f"• {nutrient_name}: {advice}\n"
+        result += "\n"
+    
+    # 성별별 맞춤 조언
+    if gender == "male":
+        result += "👨 **남성 맞춤 조언:**\n"
+        result += "• 근육량 유지를 위한 충분한 단백질 섭취\n"
+        result += "• 활동량에 맞는 적절한 칼로리 조절\n"
+        result += "• 규칙적인 운동과 함께 균형잡힌 식단 유지\n\n"
+    else:
+        result += "👩 **여성 맞춤 조언:**\n"
+        result += "• 철분 부족 예방을 위한 철분 함유 식품 섭취\n"
+        result += "• 골건강을 위한 칼슘, 비타민D 충분 섭취\n"
+        result += "• 호르몬 균형을 위한 규칙적인 식사 패턴\n\n"
+    
+    if is_fallback:
+        result += "💡 더 정확한 개인 맞춤 분석을 원하시면 AI 추천 서비스 이용을 권장합니다."
+    else:
+        result += "💡 지속적인 실천으로 건강한 영양 균형을 유지하세요."
+    
+    return result
+
+
+def get_statistical_reduction_recommendation(excessive_nutrients: Dict[str, float], rdi_info: Dict[str, float], gender: str = "male", is_fallback: bool = True) -> str:
+    """API 없을 때 통계 기반 감소 추천"""
+    if not excessive_nutrients:
+        return "현재 과다 섭취한 영양소가 없습니다! 👍"
+    
+    recommendations = []
+    
+    reduction_recommendations = {
+        'sodium_mg': {
+            'reduce': '라면, 찌개류, 김치, 젓갈류, 가공식품',
+            'alternative': '신선한 채소, 과일, 허브 양념'
+        },
+        'saturated_fat_g': {
+            'reduce': '버터, 치즈, 육류 지방, 튀김류',
+            'alternative': '올리브오일, 견과류, 생선'
+        },
+        'sugars_g': {
+            'reduce': '탄산음료, 과자, 케이크, 사탕',
+            'alternative': '신선한 과일, 무가당 요거트'
+        },
+        'cholesterol_mg': {
+            'reduce': '계란 노른자, 내장류, 새우',
+            'alternative': '계란 흰자, 생선, 두부'
+        }
+    }
+    
+    for nutrient in excessive_nutrients:
+        nutrient_name = get_nutrient_korean_name(nutrient)
+        if nutrient in reduction_recommendations:
+            reduce_foods = reduction_recommendations[nutrient]['reduce']
+            alternative_foods = reduction_recommendations[nutrient]['alternative']
+            recommendations.append(f"• {nutrient_name}:\n  - 줄일 음식: {reduce_foods}\n  - 대체 음식: {alternative_foods}")
+    
+    gender_text = "남성" if gender == "male" else "여성"
+    
+    if is_fallback:
+        result = f"⚠️ AI 추천 서비스를 이용하려면 API 키가 필요합니다.\n\n📊 통계 기반 {gender_text} 맞춤 감소 방법:\n\n" + "\n\n".join(recommendations)
+        result += f"\n\n💡 {gender_text} 건강을 위해 점진적으로 줄여나가세요."
+    else:
+        result = f"📊 {gender_text} 맞춤 감소 방법:\n\n" + "\n\n".join(recommendations)
+        result += f"\n\n💡 {gender_text} 건강을 위해 점진적으로 줄여나가세요."
+    
+    return result
