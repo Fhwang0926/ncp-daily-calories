@@ -448,7 +448,7 @@
         
         {% if results.male_excessive %}
         <div class="reduction-text">
-          <h4>⚠️ 과다 섭취 영양소 감소 방법:</h4>
+          <h2>⚠️ 과다 섭취 영양소 감소 방법:</h2>
           <div class="reduction-content-text markdown-content" id="male-reduction-content">
             {% if results.male_reduction and results.male_reduction.strip() %}
               <script>
@@ -537,7 +537,7 @@
         
         {% if results.female_excessive %}
         <div class="reduction-text">
-          <h4>⚠️ 과다 섭취 영양소 감소 방법:</h4>
+          <h2>⚠️ 과다 섭취 영양소 감소 방법:</h2>
           <div class="reduction-content-text markdown-content" id="female-reduction-content">
             {% if results.female_reduction and results.female_reduction.strip() %}
               <script>
@@ -580,6 +580,15 @@ function showRecommendation(gender) {
   event.target.classList.add('active');
   document.getElementById(gender + '-recommendation').classList.add('active');
 }
+
+// 전체 분석 결과 데이터를 전역 변수로 설정
+window.analysisResults = {
+  {% if results and results.images %}
+  images: {{ results.images | tojson | safe }},
+  {% else %}
+  images: [],
+  {% endif %}
+};
 </script>
 
 <!-- Markdown 파싱을 위한 marked.js 라이브러리 -->

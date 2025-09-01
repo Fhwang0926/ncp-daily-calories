@@ -931,8 +931,8 @@ function showImageDetail(filename, status, imageUrl, fields, fullPackage, ocrTex
               <span class="info-value" style="color: ${statusColor[status]}">${statusText[status] || status}</span>
             </div>
             ${status === 'pass' ? 
-              '<div class="info-note">이 이미지는 OCR 분석에 실패하여 영양정보를 추출할 수 없었습니다.</div>' : 
-              generateNutritionTable(fields, fullPackage, ocrTexts)
+              generateNutritionTable(fields, fullPackage, ocrTexts, filename) : 
+              generateNutritionTable(fields, fullPackage, ocrTexts, filename)
             }
           </div>
         </div>
@@ -1163,11 +1163,60 @@ function initAnalysisConfirmation() {
   }
 }
 
-// 영양정보 표 생성 함수
-function generateNutritionTable(fields, fullPackage, ocrTexts) {
-  if (!fields && !fullPackage) {
-    return '<div class="info-note">❌ 영양정보를 분석할 수 없습니다.</div>';
+// 파일명으로 전체 분석 결과에서 데이터 찾기
+function findImageDataByFilename(filename) {
+  if (!window.analysisResults || !window.analysisResults.images) {
+    console.warn('Analysis results not found');
+    return null;
   }
+  
+  const imageData = window.analysisResults.images.find(img => img.filename === filename);
+  console.log('Found image data for', filename, ':', imageData);
+  return imageData;
+}
+
+// 영양정보 표 생성 함수
+function generateNutritionTable(fields, fullPackage, ocrTexts, filename) {
+  console.log('generateNutritionTable called with:', { fields, fullPackage, ocrTexts, filename });
+  
+  // 파일명이 있으면 전체 결과에서 데이터 찾기
+  let actualData = null;
+  if (filename) {
+    const imageData = findImageDataByFilename(filename);
+    if (imageData) {
+      actualData = {
+        fields: imageData.fields,
+        fullPackage: imageData.full_package,
+        ocrTexts: imageData.ocr_texts
+      };
+      console.log('Using data from analysis results:', actualData);
+    }
+  }
+  
+  // 실제 데이터가 있으면 사용, 없으면 기존 매개변수 사용
+  const nutritionData = actualData ? (actualData.fullPackage || actualData.fields) : (fullPackage || fields);
+  const actualOcrTexts = actualData ? actualData.ocrTexts : ocrTexts;
+  
+  let contentHTML = '';
+  
+  // 영양정보가 있는 경우 표시
+  if (nutritionData) {
+    contentHTML += generateNutritionTableContent(nutritionData);
+  } else {
+    contentHTML += '<div class="info-note">❌ 영양정보를 분석할 수 없습니다.</div>';
+  }
+  
+  // OCR 텍스트는 항상 표시
+  if (actualOcrTexts && actualOcrTexts.length > 0) {
+    contentHTML += generateOCRTextContent(actualOcrTexts);
+  } else {
+    contentHTML += '<div class="ocr-texts-section"><div class="info-note">📝 OCR 텍스트 정보가 없습니다.</div></div>';
+  }
+  
+  return contentHTML;
+}
+
+function generateNutritionTableContent(nutritionData) {
 
   // 영양소 한국어 이름 매핑
   const nutrientNames = {
@@ -1242,16 +1291,15 @@ function generateNutritionTable(fields, fullPackage, ocrTexts) {
     <div class="nutrition-analysis">
       <div class="info-note success">✅ 이 이미지에서 영양정보가 성공적으로 분석되었습니다.</div>
       <div class="nutrition-table-container">
-        <h4>📊 이 제품의 영양정보</h4>
+        <h4>📊 이 제품의 영양정보 (전체 패키지 기준)</h4>
         <div class="table-description">
-          <small>아래는 현재 선택된 이미지에서 추출한 개별 제품의 영양성분표입니다.</small>
+          <small>아래는 현재 선택된 이미지에서 추출한 개별 제품의 전체 패키지 기준 영양성분표입니다.</small>
         </div>
         <table class="nutrition-table">
           <thead>
             <tr>
               <th>영양소</th>
-              <th>100g당 함량</th>
-              <th>1포장당 함량</th>
+              <th>전체 패키지 함량</th>
               <th>일일기준치 대비</th>
             </tr>
           </thead>
@@ -1267,16 +1315,14 @@ function generateNutritionTable(fields, fullPackage, ocrTexts) {
   ];
 
   displayOrder.forEach(key => {
-    if (fields && fields[key] !== undefined && fields[key] !== null) {
-      const value100g = fields[key];
-      const valuePackage = fullPackage && fullPackage[key] ? fullPackage[key] : '-';
-      const percentage = rdi[key] ? Math.round((value100g / rdi[key]) * 100) : '-';
+    if (nutritionData && nutritionData[key] !== undefined && nutritionData[key] !== null) {
+      const packageValue = nutritionData[key];
+      const percentage = rdi[key] ? Math.round((packageValue / rdi[key]) * 100) : '-';
       
       tableHTML += `
         <tr>
           <td class="nutrient-name">${nutrientNames[key] || key}</td>
-          <td class="nutrient-value">${value100g}${units[key] || ''}</td>
-          <td class="nutrient-package">${valuePackage !== '-' ? valuePackage + (units[key] || '') : '-'}</td>
+          <td class="nutrient-value">${packageValue}${units[key] || ''}</td>
           <td class="nutrient-percentage">${percentage !== '-' ? percentage + '%' : '-'}</td>
         </tr>
       `;
@@ -1294,45 +1340,43 @@ function generateNutritionTable(fields, fullPackage, ocrTexts) {
           </small>
         </div>
       </div>
-  `;
-
-  // OCR 원시 텍스트 섹션 추가
-  if (ocrTexts && ocrTexts.length > 0) {
-    tableHTML += `
-      <div class="ocr-texts-section">
-        <h4>📄 OCR 인식 텍스트</h4>
-        <div class="ocr-texts-container">
-          <div class="ocr-texts-list">
-    `;
-    
-    ocrTexts.forEach((text, index) => {
-      // 숫자와 영양정보 관련 키워드가 포함된 텍스트를 강조
-      const isNutritionText = /열량|칼로리|kcal|나트륨|탄수화물|당류|지방|포화지방|트랜스지방|콜레스테롤|단백질|내용량|총량|중량|mg|g/i.test(text);
-      const textClass = isNutritionText ? 'ocr-text nutrition-related' : 'ocr-text';
-      
-      tableHTML += `
-        <div class="${textClass}">
-          <span class="ocr-index">${index + 1}</span>
-          <span class="ocr-content">${text}</span>
-        </div>
-      `;
-    });
-    
-    tableHTML += `
-          </div>
-          <div class="ocr-note">
-            <small>🟢 녹색 배경: 영양정보 관련 텍스트</small>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  tableHTML += `
     </div>
   `;
 
   return tableHTML;
+}
+
+function generateOCRTextContent(ocrTexts) {
+  let ocrHTML = `
+    <div class="ocr-texts-section">
+      <h4>📄 OCR 인식 텍스트</h4>
+      <div class="ocr-texts-container">
+        <div class="ocr-texts-list">
+  `;
+  
+  ocrTexts.forEach((text, index) => {
+    // 숫자와 영양정보 관련 키워드가 포함된 텍스트를 강조
+    const isNutritionText = /열량|칼로리|kcal|나트륨|탄수화물|당류|지방|포화지방|트랜스지방|콜레스테롤|단백질|내용량|총량|중량|mg|g/i.test(text);
+    const textClass = isNutritionText ? 'ocr-text nutrition-related' : 'ocr-text';
+    
+    ocrHTML += `
+      <div class="${textClass}">
+        <span class="ocr-index">${index + 1}</span>
+        <span class="ocr-content">${text}</span>
+      </div>
+    `;
+  });
+  
+  ocrHTML += `
+        </div>
+        <div class="ocr-note">
+          <small>🟢 녹색 배경: 영양정보 관련 텍스트</small>
+        </div>
+      </div>
+    </div>
+  `;
+
+  return ocrHTML;
 }
 
 // 마크다운 렌더링 공통 함수
