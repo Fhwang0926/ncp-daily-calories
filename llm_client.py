@@ -272,7 +272,7 @@ def get_comprehensive_nutrition_analysis_streaming(totals: Dict[str, float], mal
         ],
         "topP": 0.8,
         "topK": 0,
-        "maxTokens": 1500,
+        "maxTokens": 1000,
         "temperature": 0.5,
         "repetitionPenalty": 1.1,
         "stop": [],
@@ -525,8 +525,9 @@ def get_reduction_recommendation(excessive_nutrients: Dict[str, float], rdi_info
 
 # 영양소 한국어 이름 매핑
 def get_nutrient_korean_name(nutrient_key: str) -> str:
-    """영양소 키를 한국어 이름으로 변환"""
+    """영양소 키를 한국어 이름으로 변환 (포괄적 매핑)"""
     names = {
+        # 기본 영양소
         'calories_kcal': '칼로리',
         'carbs_g': '탄수화물',
         'protein_g': '단백질',
@@ -545,9 +546,61 @@ def get_nutrient_korean_name(nutrient_key: str) -> str:
         'thiamine_mg': '티아민',
         'riboflavin_mg': '리보플라빈',
         'niacin_mg': '나이아신',
-        'vitamin_c_mg': '비타민C'
+        'vitamin_c_mg': '비타민C',
+        
+        # 다양한 형태의 키 매핑
+        'sat_fat_g': '포화지방',
+        'saturated_fat': '포화지방',
+        'trans_fat': '트랜스지방',
+        'dietary_fiber': '식이섬유',
+        'total_sugars': '당류',
+        'added_sugars': '첨가당',
+        'vitamin_d': '비타민D',
+        'vitamin_e': '비타민E',
+        'vitamin_k': '비타민K',
+        'folate': '엽산',
+        'vitamin_b6': '비타민B6',
+        'vitamin_b12': '비타민B12',
+        'magnesium': '마그네슘',
+        'zinc': '아연',
+        'selenium': '셀레늄',
+        
+        # 영어 원문도 매핑
+        'Calories': '칼로리',
+        'Total Fat': '지방',
+        'Saturated Fat': '포화지방',
+        'Trans Fat': '트랜스지방',
+        'Cholesterol': '콜레스테롤',
+        'Sodium': '나트륨',
+        'Total Carbohydrate': '탄수화물',
+        'Dietary Fiber': '식이섬유',
+        'Total Sugars': '당류',
+        'Added Sugars': '첨가당',
+        'Protein': '단백질',
+        'Vitamin D': '비타민D',
+        'Calcium': '칼슘',
+        'Iron': '철분',
+        'Potassium': '칼륨'
     }
-    return names.get(nutrient_key, nutrient_key)
+    
+    # 대소문자 구분 없이 매핑
+    result = names.get(nutrient_key)
+    if result:
+        return result
+    
+    # 소문자로 변환해서 다시 시도
+    result = names.get(nutrient_key.lower())
+    if result:
+        return result
+        
+    # 키에서 단위 제거 후 매핑 시도 (예: sat_fat_g -> sat_fat)
+    key_without_unit = nutrient_key.replace('_g', '').replace('_mg', '').replace('_ug', '').replace('_kcal', '')
+    result = names.get(key_without_unit)
+    if result:
+        return result
+    
+    # 매핑되지 않은 경우 원본 반환
+    return nutrient_key
 
 
 def calculate_deficient_nutrients(totals: Dict[str, float], rdi_info: Dict[str, float]) -> Dict[str, float]:
